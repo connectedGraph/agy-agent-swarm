@@ -4,8 +4,8 @@ import { mkdirSync, existsSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join, relative } from "node:path";
 import { runAgyTask } from "./acp.ts";
 import { getTask, putTask, emit, store } from "./store.ts";
-import { BOSS_JUDGE_SYSTEM, BOSS_JUDGE_TASK, BOSS_PLAN_SYSTEM, BOSS_PLAN_TASK, BOSS_SUMMARY_TASK, FIXER_TASK, REWORK_AGENT_TASK, VERIFIER_TASK, WORKER_PREAMBLE, WORKER_TASK } from "./prompts.ts";
-import type { AgentRun, CheckResult, MergeResult, PromoteResult, Task, Verification } from "../lib/types.ts";
+import { BOSS_CHAT_SYSTEM, BOSS_JUDGE_SYSTEM, BOSS_JUDGE_TASK, BOSS_PLAN_SYSTEM, BOSS_PLAN_TASK, BOSS_SUMMARY_TASK, FIXER_TASK, REWORK_AGENT_TASK, VERIFIER_TASK, WORKER_PREAMBLE, WORKER_TASK } from "./prompts.ts";
+import type { AgentRun, ChatMessage, CheckResult, MergeResult, PromoteResult, Task, Verification } from "../lib/types.ts";
 
 // standalone 模式下 server.js 会 chdir 到部署目录，仓库内的运行时文件用显式根目录定位
 const APP_ROOT = process.env.SWARM_APP_ROOT || process.cwd();
@@ -71,6 +71,80 @@ function collectPiusage(session: any): Record<string, number> | null {
     },
     { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
   );
+}
+
+/* ---------------- 编排器会话 ---------------- */
+
+function pushMessage(task: Task, msg: ChatMessage) {
+  if (!task.messages) task.messages = [];
+  task.messages.push(msg);
+  emit({ type: "chat", taskId: task.id, message: msg });
+}
+
+// 追问复用同一个 pi 会话；进程重启后按任务上下文重新起步
+const bossChatSessions = new Map<string, any>();
+
+function bossContext(task: Task): string {
+  return [
+    `目标：${task.goal}`,
+    `状态：${task.state}`,
+    task.boss.planList.length
+      ? `任务拆分：\n${task.boss.planList.map((p, i) => `- ${i + 1}. ${p.name}: ${p.task}`).join("\n")}`
+      : "",
+    task.verification
+      ? `自动检查：${task.verification.checks.map((c) => `${c.ok ? "PASS" : "FAIL"} ${c.name}`).join("；") || "无"}`
+      : "",
+    task.verdict ? `裁决：${task.verdict.pass ? "通过" : "未通过"}；理由：${task.verdict.reasons.join("；")}` : "",
+    task.summary ? `汇总：${task.summary}` : "",
+    task.promote ? `合回主干：${task.promote.ok ? "成功" : "未完成"}（${task.promote.target}）` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export async function sendBossMessage(task: Task, text: string): Promise<ChatMessage> {
+  const clean = String(text || "").trim().slice(0, 4000);
+  if (!clean) throw new Error("消息为空");
+  if (task.state !== "done" && task.state !== "failed") throw new Error("任务还在执行，先等这一轮结束");
+
+  const userMsg: ChatMessage = { id: randomUUID(), role: "user", text: clean, at: Date.now() };
+  pushMessage(task, userMsg);
+  putTask(task);
+
+  const reply: ChatMessage = { id: randomUUID(), role: "boss", text: "", at: Date.now(), kind: "reply" };
+  pushMessage(task, reply);
+
+  try {
+    const orchDir = join(ROOT, task.id, "orchestrator");
+    mkdirSync(orchDir, { recursive: true });
+    let session = bossChatSessions.get(task.id);
+    if (!session) {
+      session = await makeBossSession(orchDir);
+      bossChatSessions.set(task.id, session);
+    }
+
+    let acc = "";
+    const unsub = session.subscribe((ev: any) => {
+      if (ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta") {
+        acc += ev.assistantMessageEvent.delta;
+        reply.text = acc;
+        emit({ type: "chat", taskId: task.id, message: reply });
+      }
+    });
+    try {
+      await session.prompt(`${BOSS_CHAT_SYSTEM}\n\n当前任务上下文：\n${bossContext(task)}\n\n用户追问：${clean}`);
+    } finally {
+      if (typeof unsub === "function") unsub();
+    }
+
+    reply.text = (acc || session.getLastAssistantText?.() || "").trim() || "（编排器没有返回内容）";
+    task.boss.summaryUsage = collectPiusage(session);
+  } catch (e: any) {
+    reply.text = `编排器会话失败：${e?.message || e}`;
+    reply.error = true;
+  }
+  putTask(task);
+  return reply;
 }
 
 function flatten(v: any): string {
@@ -922,6 +996,7 @@ export function createTask(input: { goal: string; agents?: number; repoPath?: st
     rework: [],
     promote: null,
     error: null,
+    messages: [{ id: randomUUID(), role: "user", text: input.goal, at: Date.now(), kind: "goal" }],
   };
   putTask(task);
   void runTask(task);

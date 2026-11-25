@@ -7,7 +7,7 @@ Antigravity Agent Swarm。一个保守的编排层，负责约束 agy（Antigrav
 
 ![控制台](docs/screenshots/console-light.png)
 
-<sub>一个真实任务：两个执行代理各自实现并自测，合并后 5 条自动检查全部通过，独立验证器复核通过，最终合入主干。</sub>
+<sub>一个真实任务：目标与契约在左侧会话里，执行、自动检查、独立验证与汇总依次接在下面；右侧是执行代理、账本与网关。</sub>
 
 ## 技术栈
 
@@ -70,6 +70,8 @@ pnpm dev              # http://localhost:3100
 
 `data/`、`dist/`、`.git/` 不会进入产物（`outputFileTracingExcludes`）；注意别在排除规则里写
 `./server/**` 这类与 `.next/server` 同名的路径，Turbopack 会连 `.next/server/chunks` 一起剔掉。
+`dist/standalone/node_modules` 是指回仓库 `node_modules` 的相对软链：`serverExternalPackages` 的追踪
+只带 `package.json`，包内容仍需从仓库解析。
 
 也可以直接手动跑：
 
@@ -109,16 +111,16 @@ SWARM_GATEWAY_URL=http://127.0.0.1:9000 SWARM_GATEWAY_KEY=vk-demo pnpm dev
 
 ## 控制台
 
-顶部输入目标与并发代理数，回车提交。三栏：
+界面是一个会话式工作台（项目 → 会话），不是仪表盘：
 
-- **左：任务流**。每个任务显示状态、token 总量与代理数。
-- **中：执行视图**。编排器契约与任务清单 → 执行代理卡片（实时输出、token 构成、分支、改动文件）
-  → 返工记录 → 合并与验证（每条检查的 exit code、命令与原始输出、diff 统计）→ 独立验证器 → 编排器汇总。
-- **右：账本与网关**。按角色分账并绘制占比条；网关面板显示在线状态、调用数、上游 token 与录制开关。
+- **左：项目与会话**。按仓库分组列出历史会话，带状态、时间和累计 token；「新建会话」在底部输入目标与代理数。
+- **中：编排器会话**。用户目标是一条消息；编排器以助手身份给出契约与任务拆分，执行、合并、检查、返工、
+  独立验证与汇总按时间顺序接在同一条会话里。任务结束后可以继续追问编排器，回复走同一个 pi 会话。
+- **右：执行代理**。每个代理的状态、分支、token、改动文件与实时输出；点开看完整详情。下方是账本与网关。
 
 任务状态：规划中 → 集群执行 → 合并中 → 验证中 →（返工中）→ 汇总中 → 完成 / 失败。
 
-主题默认跟随系统，右上角可切换；`⌘K` / `Ctrl+K` 聚焦目标输入，`Esc` 关闭代理详情。
+主题默认跟随系统，左上角可切换；`⌘K` / `Ctrl+K` 聚焦输入框，`Esc` 关闭代理详情。
 
 ![深色主题](docs/screenshots/console-dark.png)
 
@@ -220,8 +222,9 @@ token 有三个来源，按角色分账：
 | POST | `/api/tasks` | 提交任务：`{goal, agents?, repoPath?}` |
 | GET | `/api/tasks/:id` | 单个任务快照 |
 | GET | `/api/tasks/:id/diff` | 各执行代理 worktree 的改动统计 |
+| POST | `/api/tasks/:id/messages` | 追问编排器：`{text}`，回复走同一个 pi 会话 |
 | POST | `/api/tasks/:id/promote` | 合回主干：`{force?}` |
-| GET | `/api/stream` | SSE 事件流（snapshot / task / agent / boss） |
+| GET | `/api/stream` | SSE 事件流（snapshot / task / agent / boss / chat） |
 | GET/POST | `/api/gateway` | 网关状态；`{action:"record"\|"keys", payload}` |
 
 ## 环境变量
@@ -260,6 +263,9 @@ token 有三个来源，按角色分账：
 - **依赖可见性**：下游代理的 worktree 直接基于上游提交创建，打开目录即可看到 `evidence/python-syntax.txt`
 - **一键合主干**：`main` 拿到 `Merge branch 'swarm/…/integration'`（commit `aef2a15`），验证未通过的任务被拒绝合入
 - **持久化**：重启后任务、账本、返工记录与合主干结果原样恢复
+- **会话式追问**：任务结束后追问「为什么判定通过」，编排器在同一会话上下文里作答，消息落盘
+- **standalone 部署**：`dist/standalone/server.js` + systemd user 单元常驻 127.0.0.1:3100，
+  页面、SSE、静态资源与追问接口均可用
 
 ## 当前边界
 
@@ -279,7 +285,8 @@ token 有三个来源，按角色分账：
 ```
 app/            页面、API 路由、主题启动脚本
 components/
-  Console.tsx   状态、SSE 与三栏编排
+  Console.tsx   旧仪表盘布局（保留）
+  chat/         会话式工作台：侧栏、会话流、输入框、代理栏
   console/      任务流、执行视图、验证、返工、账本、网关、代理详情
   ui/kit.tsx    基础组件（卡片、标签、按钮、展开、主题切换）
 lib/types.ts    共享类型

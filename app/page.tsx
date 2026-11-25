@@ -1,5 +1,5 @@
-import Console from "@/components/Console";
+import ChatApp from "@/components/chat/ChatApp";
 
 export default function Home() {
-  return <Console />;
+  return <ChatApp />;
 }

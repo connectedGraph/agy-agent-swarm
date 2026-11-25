@@ -102,6 +102,16 @@ export interface PromoteResult {
   commit?: string;
 }
 
+// 会话记录：目标是第一条 user 消息；之后是编排器回复与追问
+export interface ChatMessage {
+  id: string;
+  role: "user" | "boss";
+  text: string;
+  at: number;
+  kind?: "goal" | "reply";
+  error?: boolean;
+}
+
 export interface Task {
   id: string;
   goal: string;
@@ -122,12 +132,15 @@ export interface Task {
   rework: ReworkRound[];
   promote: PromoteResult | null;
   error: string | null;
+  // 编排器会话：用户的目标与追问、编排器的回复
+  messages?: ChatMessage[];
 }
 
 export type SwarmEvent =
   | { type: "task"; task: Task }
   | { type: "agent"; taskId: string; agent: AgentRun }
   | { type: "boss"; taskId: string; boss: BossRun }
+  | { type: "chat"; taskId: string; message: ChatMessage }
   | { type: "log"; taskId: string; agentId?: string; text: string; at: number }
   | { type: "record"; enabled: boolean }
   | { type: "gateway"; stats: GatewayStats };
