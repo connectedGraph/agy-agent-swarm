@@ -71,17 +71,34 @@ export function VerificationSection({ task }: { task: Task }) {
             {task.merge.map((m, i) => {
               const s = MERGE_STATUS[m.status];
               return (
-                <div key={i} className="flex items-center gap-2" style={{ height: 30, minWidth: 0 }}>
-                  <Dot tone={s.tone} />
-                  <span className="code truncate flex-none" style={{ maxWidth: 150 }}>
-                    {m.branch || "—"}
-                  </span>
-                  <span className="truncate" style={{ fontSize: 12, color: "var(--ink-2)", minWidth: 0 }}>
-                    {m.name}
-                  </span>
-                  <span className="ml-auto flex-none" style={{ fontSize: 11, color: s.color }}>
-                    {s.label}
-                  </span>
+                <div key={i} style={{ minWidth: 0 }}>
+                  <div className="flex items-center gap-2" style={{ height: 30, minWidth: 0 }}>
+                    <Dot tone={s.tone} />
+                    <span className="code truncate flex-none" style={{ maxWidth: 150 }}>
+                      {m.branch || "—"}
+                    </span>
+                    <span className="truncate" style={{ fontSize: 12, color: "var(--ink-2)", minWidth: 0 }}>
+                      {m.name}
+                    </span>
+                    <span className="ml-auto flex-none" style={{ fontSize: 11, color: s.color }}>
+                      {s.label}
+                    </span>
+                  </div>
+                  {m.status !== "merged" && m.detail && (
+                    <div
+                      style={{
+                        paddingLeft: 14,
+                        marginTop: -4,
+                        marginBottom: 2,
+                        fontSize: 11,
+                        lineHeight: 1.6,
+                        color: m.status === "conflict" ? "var(--bad)" : "var(--ink-3)",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {m.detail}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -140,7 +157,18 @@ export function VerificationSection({ task }: { task: Task }) {
                   </>
                 }
               >
-                <pre className="stream mono" style={{ marginTop: 8, maxHeight: 180, overflow: "auto" }}>
+                {c.command && (
+                  <div
+                    className="code"
+                    style={{ marginTop: 8, overflowWrap: "anywhere", whiteSpace: "normal" }}
+                  >
+                    {c.command}
+                  </div>
+                )}
+                <pre
+                  className="stream mono"
+                  style={{ marginTop: c.command ? 6 : 8, maxHeight: 180, overflow: "auto" }}
+                >
                   {c.output || "(无输出)"}
                 </pre>
               </Disclosure>

@@ -76,7 +76,7 @@ export function AgentCard({
       </div>
 
       <div
-        className="stream flex-1"
+        className="stream fade-bottom flex-1"
         style={{
           marginTop: 10,
           maxHeight: 44,
