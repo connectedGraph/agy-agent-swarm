@@ -34,7 +34,7 @@ export function VerifierCard({ task }: { task: Task }) {
   return (
     <Card style={{ padding: 18 }}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <Tag className="flex-none">独立验证者</Tag>
+        <Tag className="flex-none">独立验证器</Tag>
         <span className="flex items-center gap-1.5 flex-none" style={{ fontSize: 11, color: "var(--ink-3)" }}>
           <span className="code">agy</span>
           <span aria-hidden style={{ color: "var(--ink-4)" }}>
@@ -62,7 +62,7 @@ export function VerifierCard({ task }: { task: Task }) {
             color: v.text ? undefined : "var(--ink-4)",
           }}
         >
-          {v.text ? <RichText text={v.text} /> : "验证者正在自己决定怎么验证…"}
+          {v.text ? <RichText text={v.text} /> : "验证器正在独立执行验证…"}
         </div>
         {!open && long && (
           <div

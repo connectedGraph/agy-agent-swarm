@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Swarm · Agent 集群编排",
-  description: "包工头 + agy ACP 子代理集群控制台",
+  title: "agy swarm · Antigravity Agent Swarm",
+  description: "编排、沙箱、验证并合并 agy ACP 代理的执行结果",
 };
 
 // 在首帧之前定主题，避免闪白 / 闪黑

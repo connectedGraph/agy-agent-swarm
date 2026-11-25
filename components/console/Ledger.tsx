@@ -37,8 +37,8 @@ export function Ledger({ task }: { task: Task | null }) {
   const denom = Math.max(total, 1);
 
   const rows: Row[] = [
-    { key: "plan", label: "包工头 · 规划", color: "var(--ink-3)", value: bossPlan },
-    { key: "sum", label: "包工头 · 汇总", color: "var(--ink-4)", value: bossSum },
+    { key: "plan", label: "编排器 · 规划", color: "var(--ink-3)", value: bossPlan },
+    { key: "sum", label: "编排器 · 汇总", color: "var(--ink-4)", value: bossSum },
     ...workers.map((w, i) => ({
       key: `worker-${i}`,
       label: w.name,
@@ -48,7 +48,7 @@ export function Ledger({ task }: { task: Task | null }) {
     })),
   ];
   if (verifierTokens > 0) {
-    rows.push({ key: "verifier", label: "验证者", color: "var(--ink-2)", value: verifierTokens });
+    rows.push({ key: "verifier", label: "验证器", color: "var(--ink-2)", value: verifierTokens });
   }
   if (fixerTokens > 0) {
     rows.push({ key: "fixer", label: "返工修复", color: "var(--bad)", opacity: 0.8, value: fixerTokens });

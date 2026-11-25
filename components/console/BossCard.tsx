@@ -32,7 +32,7 @@ export function BossCard({ task }: { task: Task }) {
       }}
     >
       <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
-        <Tag>包工头</Tag>
+        <Tag>编排器</Tag>
         <span className="code truncate">{BOSS_MODEL}</span>
         <span
           className="flex items-center flex-none"
@@ -114,7 +114,7 @@ export function BossCard({ task }: { task: Task }) {
                 "linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%)",
             }}
           >
-            {boss.text ? preview(boss.text, 420, live) : "等待拆解目标"}
+            {boss.text ? preview(boss.text, 420, live) : "正在生成任务契约…"}
           </div>
         </div>
       )}

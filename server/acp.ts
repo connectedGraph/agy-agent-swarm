@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 
 export interface AgyTaskOptions {
   prompt: string;
@@ -20,6 +22,67 @@ export interface AgyTaskResult {
 }
 
 const AGY_BIN = process.env.AGY_BIN || `${process.env.HOME}/.local/bin/agy`;
+const BWRAP_BIN = process.env.BWRAP_BIN || "/usr/bin/bwrap";
+const SANDBOX_MODE = process.env.SWARM_SANDBOX || "bwrap";
+
+// agy 在会话过程中需要写的目录；其余路径在沙箱里一律只读
+const RW_HOME = [
+  ".cache/antigravity",
+  ".config/antigravity",
+  ".gemini",
+  ".local/share/antigravity-tools",
+  ".local/share/com.lbjlaq.antigravity-tools",
+  ".local/state",
+];
+
+/* bubblewrap 沙箱：根文件系统只读，只有 worktree 与 agy 自己的状态目录可写。
+   网络保持共享（模型 API 需要），PID/IPC/UTS 隔离。 */
+function spawnSpec(cwd: string, extraArgs: string[]) {
+  const agyArgs = ["acp", "--dangerously-skip-permissions", ...extraArgs];
+  if (SANDBOX_MODE === "off" || !existsSync(BWRAP_BIN)) {
+    return { cmd: AGY_BIN, args: agyArgs };
+  }
+  try {
+    const real = realpathSync(cwd);
+    const args = [
+      "--ro-bind",
+      "/",
+      "/",
+      ...["/data", "/sys"]
+        .filter((p) => existsSync(p))
+        .flatMap((p) => ["--ro-bind", p, p]),
+      "--dev-bind",
+      "/dev",
+      "/dev",
+      "--proc",
+      "/proc",
+      "--tmpfs",
+      "/tmp",
+    ];
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const runUser = uid === null ? null : `/run/user/${uid}`;
+    if (runUser && existsSync(runUser)) args.push("--bind", runUser, runUser);
+    args.push("--bind", real, real);
+    const binds = new Set<string>();
+    for (const rel of RW_HOME) {
+      const p = join(process.env.HOME || "", rel);
+      if (existsSync(p)) binds.add(realpathSync(p));
+    }
+    for (const p of binds) args.push("--bind", p, p);
+    args.push(
+      "--die-with-parent",
+      "--unshare-pid",
+      "--unshare-ipc",
+      "--unshare-uts",
+      "--share-net",
+      AGY_BIN,
+      ...agyArgs,
+    );
+    return { cmd: BWRAP_BIN, args };
+  } catch {
+    return { cmd: AGY_BIN, args: agyArgs };
+  }
+}
 
 export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
   const {
@@ -34,7 +97,8 @@ export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
   } = opts;
 
   return new Promise((resolve) => {
-    const child = spawn(AGY_BIN, ["acp", "--dangerously-skip-permissions", ...extraArgs], {
+    const spec = spawnSpec(cwd, extraArgs);
+    const child = spawn(spec.cmd, spec.args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, LANG: "C.UTF-8", AGENT_ID: agentId || "", ...env },
@@ -131,7 +195,7 @@ export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
         await request("initialize", {
           protocolVersion: 1,
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-          clientInfo: { name: "agent-swarm", version: "0.1.0" },
+          clientInfo: { name: "agy-agent-swarm", version: "0.1.0" },
         });
         const ns = await request("session/new", { cwd, mcpServers: [] });
         const sessionId = ns.result?.sessionId;

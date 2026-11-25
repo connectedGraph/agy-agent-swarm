@@ -37,13 +37,13 @@ function short(id: string) {
   return id.slice(0, 8);
 }
 
-/* ---------------- 包工头 ---------------- */
+/* ---------------- 编排器 ---------------- */
 
 async function makeBossSession(cwd: string) {
   const pi: any = await import("@earendil-works/pi-coding-agent");
   const modelRuntime = await pi.ModelRuntime.create();
   const model = modelRuntime.getModel(BOSS_PROVIDER, BOSS_MODEL);
-  if (!model) throw new Error(`包工头模型不可用: ${BOSS_PROVIDER}/${BOSS_MODEL}`);
+  if (!model) throw new Error(`编排器模型不可用: ${BOSS_PROVIDER}/${BOSS_MODEL}`);
   const { session } = await pi.createAgentSession({
     model,
     modelRuntime,
@@ -256,7 +256,7 @@ function mergeAll(task: Task): MergeResult[] {
   const results: MergeResult[] = [];
   for (const a of task.agents) {
     if (a.state !== "done" || !a.branch) {
-      results.push({ name: a.name, branch: a.branch, status: "skipped", detail: a.state !== "done" ? `工人状态 ${a.state}` : "无分支" });
+      results.push({ name: a.name, branch: a.branch, status: "skipped", detail: a.state !== "done" ? `执行代理状态 ${a.state}` : "无分支" });
       continue;
     }
     const c = commitAgent(a);
@@ -376,7 +376,7 @@ function verify(task: Task, merge: MergeResult[]): Verification {
   const auto = detectChecks(intDir);
   const contractCmds = (Array.isArray(task.boss.contract?.verify) ? task.boss.contract.verify : [])
     .filter((c: any) => typeof c === "string" && c.trim() && !BANNED_CMD.test(c))
-    .map((c: string) => ({ name: `契约验收: ${c.slice(0, 70)}`, command: c }));
+    .map((c: string) => ({ name: `契约检查: ${c.slice(0, 70)}`, command: c }));
   const checks = [...auto, ...contractCmds];
   const results = runChecks(intDir, checks);
   let diffStat = "";
@@ -560,7 +560,7 @@ function collectProblems(task: Task): Problem[] {
   const out: Problem[] = [];
   for (const a of task.agents) {
     if (a.state === "failed") {
-      out.push({ kind: "failed", agent: a, name: a.name, reason: "工人本轮执行失败", detail: a.error || "无错误信息" });
+      out.push({ kind: "failed", agent: a, name: a.name, reason: "执行代理本轮执行失败", detail: a.error || "无错误信息" });
     }
   }
   for (const m of task.merge) {
@@ -570,7 +570,7 @@ function collectProblems(task: Task): Problem[] {
   }
   for (const c of task.verification?.checks || []) {
     if (c.ok) continue;
-    out.push({ kind: "check", name: c.name, reason: `验收命令失败：${c.command}`, detail: `exit ${c.exitCode}\n${c.output}` });
+    out.push({ kind: "check", name: c.name, reason: `检查命令失败：${c.command}`, detail: `exit ${c.exitCode}\n${c.output}` });
   }
   return out;
 }
@@ -582,8 +582,8 @@ function problemsText(ps: Problem[]): string {
 }
 
 // 返工只做一件事：把失败证据交回给它真正能改的那一层。
-// 工人级问题（自己没跑完 / 分支冲突）→ 让它基于当前 integration 提交重做；
-// 只剩验收项失败（多份改动叠加后才暴露）→ 派修复者在合并树上直接修。
+// 执行代理级问题（未跑完 / 分支冲突）→ 基于当前 integration 提交重做；
+// 只有自动检查失败（多份改动叠加后才暴露）→ 修复代理直接在合并树上修。
 async function reworkOnce(task: Task, round: number): Promise<"none" | "progress" | "stalled"> {
   const problems = collectProblems(task);
   if (!problems.length) return "none";
@@ -631,8 +631,8 @@ async function reworkOnce(task: Task, round: number): Promise<"none" | "progress
   const entry = {
     round,
     target: "fixer" as const,
-    who: `修复者 #${round}`,
-    reason: `合并后验收失败 ${problems.length} 项`,
+    who: `修复代理 #${round}`,
+    reason: `合并后自动检查失败 ${problems.length} 项`,
     detail,
     text: "",
     usage: null,
@@ -653,18 +653,18 @@ async function reworkOnce(task: Task, round: number): Promise<"none" | "progress
   });
 
   trySh("git", ["-C", intDir, "add", "-A", "--", ".", ...JUNK]);
-  const c = trySh("git", [...GIT, "-C", intDir, "commit", "-qm", `fixer #${round}: 修复合并后的验收失败`], intDir);
+  const c = trySh("git", [...GIT, "-C", intDir, "commit", "-qm", `fixer #${round}: 修复合并后的自动检查失败`], intDir);
   const after = integrationHead(task);
 
   entry.text = res.text || entry.text;
   entry.usage = (res.usage || null) as any;
   entry.ok = before !== after || (c.ok && !res.error);
-  if (res.error) entry.reason += `（修复者报错：${res.error}）`;
+  if (res.error) entry.reason += `（修复代理报错：${res.error}）`;
   putTask(task);
 
   task.verification = verify(task, task.merge);
   putTask(task);
-  // 修复者一筹莫展（一个文件都没动）时再开一轮没有意义，把最终判断交给人
+  // 修复代理未修改任何文件时，再开一轮没有意义，直接交给裁决
   return before !== after ? "progress" : "stalled";
 }
 
@@ -675,15 +675,15 @@ async function judge(task: Task, verification: Verification, merge: MergeResult[
       `目标：${task.goal}`,
       `合并结果：\n${merge.map((m) => `- ${m.name}: ${m.status} (${m.branch}) ${m.detail}`).join("\n")}`,
       `合并后 diff stat：\n${verification.diffStat || "(空)"}`,
-      `验收命令与结果：\n${
+      `检查命令与结果：\n${
         verification.checks.length
           ? verification.checks
               .map((c) => `- [${c.ok ? "PASS" : "FAIL"}] ${c.name} (exit ${c.exitCode})\n${c.output.slice(-800)}`)
               .join("\n")
-          : "(没有可识别的自动验收命令)"
+          : "(没有可识别的自动检查命令)"
       }`,
-      `独立验证者（看到的是合并后的完整代码，自选方式验证，它的证据优先于工人自述）：\n${task.verifier?.text || "(未运行)"}`,
-      `工人自述（仅供参考，不可当作证据）：\n${task.agents
+      `独立验证器（看到合并后的完整代码，自行选择验证方式，证据优先于执行代理自述）：\n${task.verifier?.text || "(未运行)"}`,
+      `执行代理自述（仅供参考，不可当作证据）：\n${task.agents
         .map((a) => `- ${a.name}: ${a.text.slice(-400).replace(/\s+/g, " ")}`)
         .join("\n")}`,
     ].join("\n\n");
@@ -734,12 +734,12 @@ async function judge(task: Task, verification: Verification, merge: MergeResult[
     if (!reasons.length) {
       reasons = [
         hardPass
-          ? `自动检查与合并均通过；包工头${modelPass === false ? "有保留" : "无异议"}。`
+          ? `自动检查与合并均通过；编排器${modelPass === false ? "有保留" : "无异议"}。`
           : verification.checks.some((c) => !c.ok)
             ? `自动检查失败：${verification.checks.filter((c) => !c.ok).map((c) => c.name).join("、")}`
             : merge.some((m) => m.status === "conflict")
               ? "存在合并冲突"
-              : "工人未全部正常完成",
+              : "执行代理未全部正常完成",
       ];
     }
     task.verdict = { pass, reasons, raw: (cleaned || raw).slice(0, 2000) };
@@ -768,7 +768,7 @@ async function aggregate(task: Task): Promise<void> {
       .join("\n\n");
     const ctx = [
       `合并已由系统完成：${task.merge.map((m) => `${m.name}=${m.status}`).join("，")}`,
-      `自动验收：${task.verification?.ok ? "通过" : "未通过"}`,
+      `自动检查：${task.verification?.ok ? "通过" : "未通过"}`,
     ].join("\n");
     const prompt = BOSS_SUMMARY_TASK(`${ctx}\n\n${reports}`);
 
@@ -805,7 +805,7 @@ async function runTask(task: Task) {
       if (!ready.length) ready = remaining; // 循环依赖兜底：剩下的全部放行
       await Promise.all(
         ready.map((a) => {
-          // 有依赖的工人从依赖方的提交出发，这样它能看到上游已经写下的东西
+          // 有依赖的执行代理从依赖方的提交出发，确保能看到上游已提交的产物
           const deps = (a.dependsOn || [])
             .map((n) => task.agents.find((x) => x.name === n && x.state === "done" && x.branch))
             .filter(Boolean) as AgentRun[];
@@ -835,7 +835,7 @@ async function runTask(task: Task) {
     task.verification = verify(task, task.merge);
     putTask(task);
 
-    // 验收失败 → 返工，最多 N 轮；每轮只处理一类问题，改完重新合并/重跑验收
+    // 自动检查失败 → 返工，最多 N 轮；每轮只处理一类问题，改完重新合并并/重跑验收
     const maxRounds = Math.max(0, Number(process.env.SWARM_REWORK_ROUNDS ?? 2));
     for (let round = 1; round <= maxRounds; round++) {
       const acted = await reworkOnce(task, round);
@@ -867,7 +867,7 @@ function recount(task: Task) {
   const boss = (task.boss.usage?.totalTokens || 0) + (task.boss.summaryUsage?.totalTokens || 0);
   const agents = task.agents.reduce((n, a) => n + (a.spent || a.usage?.totalTokens || 0), 0);
   const verifier = task.verifier?.usage?.totalTokens || 0;
-  // 工人返工的开销已经算进 agent.spent，这里只补修复者的
+  // 执行代理返工开销已计入 agent.spent，这里只补修复代理
   const fixers = (task.rework || []).filter((r) => r.target === "fixer").reduce((n, r) => n + (r.usage?.totalTokens || 0), 0);
   task.totalUsage = boss + agents + verifier + fixers;
 }
@@ -954,9 +954,9 @@ export function promoteTask(task: Task, force = false): PromoteResult {
   };
 
   if (!base) return record(false, "找不到基础仓库");
-  if (!task.verification) return record(false, "还没有完成合并与验收");
+  if (!task.verification) return record(false, "还没有完成合并与验证");
   if (!force && !task.verdict?.pass) {
-    return record(false, `验收未通过，拒绝合入。${task.verdict?.reasons?.[0] || ""}`);
+    return record(false, `验证未通过，拒绝合入。${task.verdict?.reasons?.[0] || ""}`);
   }
 
   const dirty = trySh("git", ["-C", base, "status", "--porcelain", "--untracked-files=no"]);

@@ -10,7 +10,7 @@ export const STATE_LABEL: Record<string, string> = {
   planning: "规划中",
   running: "集群执行",
   merging: "合并中",
-  verifying: "验收中",
+  verifying: "验证中",
   rework: "返工中",
   aggregating: "汇总中",
   idle: "待命",
@@ -59,6 +59,19 @@ export function clock(ts?: number | null) {
   if (!ts) return "";
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// 历史任务里保存的是旧的角色名，展示层统一到当前术语，不改写原始记录
+export function sysText(s: string) {
+  return s
+    .replace(/包工头/g, "编排器")
+    .replace(/工人/g, "执行代理")
+    .replace(/修复者/g, "修复代理")
+    .replace(/验证者/g, "验证器")
+    .replace(/合并后验收失败/g, "合并后自动检查失败")
+    .replace(/契约验收/g, "契约检查")
+    .replace(/验收未通过/g, "验证未通过")
+    .replace(/验收命令/g, "检查命令");
 }
 
 // 卡片里的文本预览：

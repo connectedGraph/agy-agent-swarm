@@ -42,10 +42,10 @@ export function Stage({
               style={{ fontSize: 11.5, color: "var(--ink-2)" }}
             >
               <Dot tone={failedVerdict ? "bad" : STATE_TONE[task.state] || "neutral"} live={isLive(task.state)} />
-              {failedVerdict ? "验收未通过" : STATE_LABEL[task.state] || task.state}
+              {failedVerdict ? "验证未通过" : STATE_LABEL[task.state] || task.state}
             </span>
             <span style={{ color: "var(--ink-4)", fontSize: 11 }}>
-              {n} 个工人
+              {n} 个执行代理
               {done > 0 && done < n ? ` · ${done} 完成` : ""}
               {failed ? ` · ${failed} 失败` : ""}
             </span>
@@ -61,7 +61,7 @@ export function Stage({
         </div>
 
         <div className="flex-none text-right" style={{ paddingTop: 4 }}>
-          <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 1 }}>总账</div>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 1 }}>Token 总计</div>
           <div className="num" style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.2 }}>
             {fmt(task.totalUsage)}
           </div>

@@ -82,7 +82,7 @@ export interface Verdict {
   raw: string;
 }
 
-// 一轮返工：要么把失败的工人重跑一遍，要么派修复者在合并树上直接修
+// 一轮返工：重跑失败的执行代理，或由修复代理直接在合并树上修
 export interface ReworkRound {
   round: number;
   target: "agent" | "fixer";

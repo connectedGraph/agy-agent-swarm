@@ -16,7 +16,7 @@ export function SummaryCard({ task }: { task: Task }) {
           letterSpacing: "0.04em",
         }}
       >
-        包工头汇总
+        编排器汇总
       </div>
       <div
         style={{

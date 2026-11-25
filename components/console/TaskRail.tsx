@@ -90,7 +90,7 @@ export function TaskRail({
                   style={{ marginTop: 6, fontSize: 10.5, color: "var(--ink-4)" }}
                 >
                   <span className="num">{clock(task.createdAt)}</span>
-                  <span className="num">{task.agents.length} 工人</span>
+                  <span className="num">{task.agents.length} 代理</span>
                 </div>
               </button>
             );

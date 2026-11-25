@@ -539,7 +539,7 @@ html.theme-switching * {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------------- 富文本（验证者 / 修复者报告） ---------------- */
+/* ---------------- 富文本（验证器 / 修复代理报告） ---------------- */
 
 .rich {
   font-size: 12.5px;

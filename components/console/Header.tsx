@@ -53,8 +53,8 @@ export function Header({
       <div className="flex items-center gap-2.5 min-w-0">
         <BrandMark />
         <div className="leading-none">
-          <div style={{ fontSize: 13.5, fontWeight: 600, letterSpacing: "-0.01em" }}>Swarm</div>
-          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>Agent 集群编排</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, letterSpacing: "-0.01em" }}>agy swarm</div>
+          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3 }}>Antigravity Agent Swarm</div>
         </div>
       </div>
 
@@ -68,7 +68,7 @@ export function Header({
         </span>
         <span className="hidden xl:inline" style={{ width: 1, height: 14, background: "var(--line)" }} />
         <span className="hidden xl:inline" style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
-          包工头 deepseek-v4.1-flash · 工人 agy ACP
+          编排器 deepseek-v4.1-flash · 执行代理 agy ACP
         </span>
       </div>
 
@@ -79,7 +79,7 @@ export function Header({
           <input
             className="input"
             style={{ paddingRight: 30 }}
-            placeholder="给集群一个目标，例如：补一套 API 冒烟测试"
+            placeholder="输入目标，契约与验收标准由编排器生成"
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
@@ -107,16 +107,16 @@ export function Header({
           style={{ width: 86 }}
           value={count}
           onChange={(e) => setCount(Number(e.target.value))}
-          aria-label="工人数量"
+          aria-label="并发代理数"
         >
           {[1, 2, 3, 4, 5, 6].map((n) => (
             <option key={n} value={n}>
-              {n} 工人
+              {n} 代理
             </option>
           ))}
         </select>
         <Btn variant="primary" onClick={submit} disabled={disabled} icon={busy ? <Spinner /> : undefined}>
-          {busy ? "派发中" : "派发"}
+          {busy ? "提交中" : "提交任务"}
         </Btn>
       </div>
     </header>

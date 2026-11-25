@@ -3,7 +3,7 @@
 import { Card, Disclosure, Tag } from "@/components/ui/kit";
 import type { Task } from "@/lib/types";
 import { RichText } from "./RichText";
-import { fmt } from "./shared";
+import { fmt, sysText } from "./shared";
 
 // 从返工详情里取出触发本轮的具体检查项，比如「python 语法 (1 文件)」
 function roundCause(detail: string) {
@@ -20,7 +20,7 @@ export function ReworkSection({ task }: { task: Task }) {
   return (
     <Card style={{ padding: 18 }}>
       <div className="flex items-center gap-2">
-        <div className="subtitle flex-none">返工</div>
+        <div className="subtitle flex-none">返工记录</div>
         <Tag>
           <span className="num">{rounds.length}</span> 轮
         </Tag>
@@ -45,7 +45,7 @@ export function ReworkSection({ task }: { task: Task }) {
                   <>
                     <span className="code flex-none">#{r.round}</span>
                     <Tag className="flex-none">
-                      {isFixer ? "修复者" : "重跑工人"}
+                      {isFixer ? "修复代理" : "重跑代理"}
                     </Tag>
                     {!isFixer && (
                       <span
@@ -56,12 +56,12 @@ export function ReworkSection({ task }: { task: Task }) {
                       </span>
                     )}
                     <span className="truncate flex-1" style={{ fontSize: 12, minWidth: 0 }}>
-                      <span style={{ color: "var(--ink-3)" }}>{r.reason}</span>
+                      <span style={{ color: "var(--ink-3)" }}>{sysText(r.reason)}</span>
                       {cause && <span style={{ color: "var(--ink-2)" }}> · {cause}</span>}
                     </span>
                     <span className="flex items-center gap-2 flex-none">
                       <span style={{ fontSize: 11, color: r.ok ? "var(--ok)" : "var(--bad)" }}>
-                        {r.ok ? "有产出" : "无产出"}
+                        {r.ok ? "已修改" : "未修改"}
                       </span>
                       <span className="code">{fmt(tokens)}</span>
                     </span>

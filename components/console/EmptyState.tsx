@@ -35,7 +35,7 @@ export function EmptyState({
             color: "var(--ink)",
           }}
         >
-          把目标交给一群工人
+          约束式多代理编排
         </h2>
 
         <p
@@ -47,7 +47,7 @@ export function EmptyState({
             color: "var(--ink-3)",
           }}
         >
-          包工头拆解目标，把互不重叠的子任务派给独立工位。合并、验收和每一笔 token 都记在这里。
+          编排器先产出任务契约、写入范围与验收命令，执行代理在 bubblewrap 沙箱中并行实现；合并后由真实命令和独立验证器裁决。
         </p>
 
         <div className="flex items-center justify-center" style={{ gap: 8 }}>
@@ -55,7 +55,7 @@ export function EmptyState({
             <input
               className="input"
               style={{ paddingRight: hasGoal ? 30 : 12 }}
-              placeholder="描述要完成的目标"
+              placeholder="输入目标，契约与验收标准由编排器生成"
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
               onKeyDown={(e) => {
@@ -86,7 +86,7 @@ export function EmptyState({
             disabled={busy || !hasGoal}
             icon={busy ? <Spinner /> : undefined}
           >
-            {busy ? "派发中" : "派发"}
+            {busy ? "提交中" : "提交任务"}
           </Btn>
         </div>
 

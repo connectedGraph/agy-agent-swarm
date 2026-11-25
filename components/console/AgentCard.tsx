@@ -72,7 +72,7 @@ export function AgentCard({
         className="line-clamp-2"
         style={{ fontSize: 12, lineHeight: 1.55, color: "var(--ink-2)", marginTop: 8, minHeight: 37 }}
       >
-        {agent.task || <span style={{ color: "var(--ink-4)" }}>等待包工头分配</span>}
+        {agent.task || <span style={{ color: "var(--ink-4)" }}>等待任务分配</span>}
       </div>
 
       <div

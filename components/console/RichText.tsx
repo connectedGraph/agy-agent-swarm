@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-/* 轻量 Markdown 渲染：只处理验证者/修复者报告里真实出现的语法
+/* 轻量 Markdown 渲染：只处理验证器 / 修复代理报告里真实出现的语法
    标题、有序/无序列表、加粗、行内代码、链接、代码块。
    不做 HTML 注入，链接只显示文字并把地址放进 title。 */
 

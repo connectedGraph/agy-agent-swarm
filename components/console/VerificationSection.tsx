@@ -3,6 +3,7 @@
 import { useState, type CSSProperties } from "react";
 import { Btn, Card, Disclosure, Divider, Dot, Spinner, Tag } from "@/components/ui/kit";
 import type { MergeResult, Task } from "@/lib/types";
+import { sysText } from "./shared";
 
 const LABEL: CSSProperties = {
   fontSize: 11,
@@ -181,7 +182,7 @@ export function VerificationSection({ task }: { task: Task }) {
   return (
     <Card style={{ padding: 18 }}>
       <div className="flex items-center gap-2 min-w-0">
-        <div className="subtitle flex-none">合并与验收</div>
+        <div className="subtitle flex-none">合并与验证</div>
         {verdict && <Tag tone={verdict.pass ? "ok" : "bad"}>{verdict.pass ? "通过" : "未通过"}</Tag>}
         <div className="ml-auto min-w-0 flex justify-end">
           {v ? (
@@ -201,7 +202,7 @@ export function VerificationSection({ task }: { task: Task }) {
               {failedChecks.length} 项检查未通过
             </span>
             <span style={{ fontSize: 11.5, color: "var(--ink-2)" }}>
-              {failedChecks.map((c) => c.name).join(" · ")}
+              {failedChecks.map((c) => sysText(c.name)).join(" · ")}
             </span>
           </div>
           {firstFail && (
@@ -282,13 +283,13 @@ export function VerificationSection({ task }: { task: Task }) {
           )}
         </div>
 
-        {/* 真实验收 */}
+        {/* 自动检查 */}
         <div>
-          <div style={LABEL}>真实验收</div>
+          <div style={LABEL}>自动检查</div>
           <div className="flex flex-col" style={{ marginTop: 8, gap: 6 }}>
             {!v && (
               <div style={{ fontSize: 11, color: "var(--ink-4)", height: 30, display: "flex", alignItems: "center" }}>
-                等待验收
+                等待验证
               </div>
             )}
             {v && v.checks.length === 0 && (
@@ -310,7 +311,7 @@ export function VerificationSection({ task }: { task: Task }) {
                       {c.ok ? "PASS" : "FAIL"}
                     </span>
                     <span className="truncate flex-1" style={{ fontSize: 12, color: "var(--ink-2)", minWidth: 0 }}>
-                      {c.name}
+                      {sysText(c.name)}
                     </span>
                     <span className="code flex-none" style={{ color: "var(--ink-4)" }}>
                       exit <span className="num">{c.exitCode}</span> · <span className="num">{c.ms}</span>ms
@@ -347,7 +348,7 @@ export function VerificationSection({ task }: { task: Task }) {
             background: "var(--surface-2)",
           }}
         >
-          <div style={LABEL}>判定理由</div>
+          <div style={LABEL}>裁决理由</div>
           <div className="flex flex-col" style={{ marginTop: 6, gap: 2 }}>
             {(verdict.reasons.length ? verdict.reasons : ["无理由"]).map((r, i) => (
               <div key={i} className="flex" style={{ gap: 8 }}>
@@ -361,7 +362,7 @@ export function VerificationSection({ task }: { task: Task }) {
                     marginTop: 8,
                   }}
                 />
-                <span style={{ fontSize: 12.5, lineHeight: 1.7, color: "var(--ink)" }}>{r}</span>
+                <span style={{ fontSize: 12.5, lineHeight: 1.7, color: "var(--ink)" }}>{sysText(r)}</span>
               </div>
             ))}
           </div>
@@ -371,7 +372,7 @@ export function VerificationSection({ task }: { task: Task }) {
       <Divider className="mt-4" />
 
       <div className="flex flex-wrap items-center gap-2" style={{ marginTop: 12 }}>
-        <span style={{ ...LABEL, flex: "none" }}>主干</span>
+        <span style={{ ...LABEL, flex: "none" }}>主干分支</span>
         {promote?.ok ? (
           <Tag tone="ok">
             已合入 {promote.target}
@@ -404,8 +405,8 @@ export function VerificationSection({ task }: { task: Task }) {
             <span className="ml-auto" style={{ fontSize: 11, color: "var(--ink-3)" }}>
               {verdict
                 ? verdict.pass
-                  ? "验收通过，可合回主干"
-                  : "验收未通过，只能强制合入"
+                  ? "验证通过，可合回主干"
+                  : "验证未通过，只能强制合入"
                 : "等待判定"}
             </span>
           </>
@@ -423,7 +424,7 @@ export function VerificationSection({ task }: { task: Task }) {
             color: "var(--bad)",
           }}
         >
-          {promote.detail}
+          {sysText(promote.detail)}
         </div>
       )}
     </Card>
