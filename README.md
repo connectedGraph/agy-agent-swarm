@@ -9,6 +9,13 @@ Antigravity Agent Swarm。一个保守的编排层，负责约束 agy（Antigrav
 
 <sub>一个真实任务：两个执行代理各自实现并自测，合并后 5 条自动检查全部通过，独立验证器复核通过，最终合入主干。</sub>
 
+## 技术栈
+
+- **编排器**：pi SDK（TypeScript）→ DeepSeek；工具调用经 JSON-RPC 驱动子进程。
+- **执行协议**：Agent Client Protocol（ACP，stdio JSON-RPC）。
+- **隔离**：git worktree 负责分支与历史；bubblewrap（bubble sandbox）负责文件系统与命名空间。
+- **控制台**：Next.js 16 App Router，API Route + SSE，单进程全栈。
+
 ## 问题
 
 Antigravity 模型能力不弱，但默认行为倾向于一次性完成整个工程：自行扩大范围、跳过验证、把没有运行过的代码

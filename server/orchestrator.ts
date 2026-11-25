@@ -379,17 +379,22 @@ function verify(task: Task, merge: MergeResult[]): Verification {
     .map((c: string) => ({ name: `契约检查: ${c.slice(0, 70)}`, command: c }));
   const checks = [...auto, ...contractCmds];
   const results = runChecks(intDir, checks);
+
+  // 合并后相对分叉点的真实差异。base 仓库的默认分支不一定是 main（可能是 master），
+  // 所以先解析它，再用 merge-base 取分叉提交，避免基分支在任务期间前进带来的噪声。
   let diffStat = "";
   try {
-    diffStat = sh("git", ["-C", intDir, "diff", "--stat", "HEAD~0"], intDir);
+    const baseBranch = (() => {
+      if (!task.baseRepo) return "main";
+      const r = trySh("git", ["-C", task.baseRepo, "rev-parse", "--abbrev-ref", "HEAD"]);
+      const name = r.ok ? r.out.trim() : "";
+      return name && name !== "HEAD" ? name : "main";
+    })();
+    const mb = trySh("git", ["-C", intDir, "merge-base", "HEAD", baseBranch]);
+    const ref = mb.ok && mb.out.trim() ? mb.out.trim() : "HEAD^1";
+    diffStat = sh("git", [...GIT, "-C", intDir, "diff", "--stat", ref], intDir);
   } catch {
     diffStat = "";
-  }
-  // 合并后相对 base 的真实差异
-  try {
-    diffStat = sh("git", [...GIT, "-C", intDir, "diff", "--stat", "main"], intDir);
-  } catch {
-    /* ignore */
   }
   void merge;
 
