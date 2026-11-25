@@ -4,6 +4,12 @@ Agent 集群编排站。一个包工头（pi SDK + DeepSeek）把目标拆成并
 Antigravity 子代理（`agy acp`），合并、验收、返工、判定、合回主干全部在页面上看得见，
 每一笔 token 都落到账本上。
 
+`Next.js 16` · `React 19` · `pi SDK` · `agy acp` · `git worktree` · `SSE`
+
+![控制台](docs/screenshots/console.png)
+
+<sub>一个真实任务：两个工人各自实现并自测，合并后 5 条检查全部 PASS，独立验证者也通过了，最后合入主干。</sub>
+
 ## 它解决什么
 
 - **隔离**：每个工人一个 git worktree / 一条分支，互相看不见，改动不串味。
@@ -56,6 +62,13 @@ SWARM_GATEWAY_URL=http://127.0.0.1:9000 SWARM_GATEWAY_KEY=vk-demo pnpm dev
   以及「录制完整 API 报文」开关。
 
 任务状态：规划中 → 集群执行 → 合并中 → 验收中 →（返工中）→ 汇总中 → 完成/失败。
+
+验收失败的形态长这样：
+
+![返工与判定](docs/screenshots/console-rework.png)
+
+<sub>目标要求「不要修改任何 .py」，但仓库本身就有一个语法错误的 .py。修复者复现后拒绝改，
+判定如实 FAIL；返工的开销（240.9k）在账本里单独一行，不混进工人花费。</sub>
 
 ## 提示词契约
 
@@ -216,4 +229,10 @@ data/           运行时数据（不入库）
   runs/<taskId>/   各工人 worktree、integration、orchestrator
   tasks/<taskId>.json  任务快照
   gateway/*.jsonl  网关录制
+docs/screenshots/  控制台截图
 ```
+
+## License
+
+MIT
+
