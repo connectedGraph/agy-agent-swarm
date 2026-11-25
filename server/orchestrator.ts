@@ -154,7 +154,10 @@ function cleanModelText(t: string): string {
 /* ---------------- 仓库与 worktree ---------------- */
 
 function ensureBaseRepo(task: Task): string {
-  if (task.baseRepo) return task.baseRepo;
+  if (task.baseRepo) {
+    if (!task.baseBranch) task.baseBranch = actualBranch(task.baseRepo) || null;
+    return task.baseRepo;
+  }
 
   if (task.repoPath && existsSync(join(task.repoPath, ".git"))) {
     task.baseRepo = task.repoPath;
@@ -949,7 +952,7 @@ export function promoteTask(task: Task, force = false): PromoteResult {
   const base =
     task.baseRepo ||
     (task.repoPath && existsSync(join(task.repoPath, ".git")) ? task.repoPath : null);
-  const target = (base && actualBranch(base)) || "main";
+  const target = task.baseBranch || (base && actualBranch(base)) || "main";
 
   const record = (ok: boolean, detail: string, commit?: string) => {
     const r: PromoteResult = { at: Date.now(), target, ok, detail, commit };

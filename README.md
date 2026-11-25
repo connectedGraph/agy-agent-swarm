@@ -231,6 +231,8 @@ token 有三个来源，按角色分账：
 
 - `agy acp` 可程序化驱动；`session/prompt` 返回完整 usage（input/output/thought/cached/total）
 - bubblewrap 沙箱内 ACP 握手、文件写入、`git status` 与命令输出均正常
+- **沙箱内真实任务**：1 个执行代理在 bubblewrap 中写完 README 与 evidence，自动检查通过，
+  独立验证器 PASS（223.7k tokens，代理 112.8k，验证器 84.7k）
 - 编排器经 pi SDK 派发，工具调用真实驱动独立 agy 进程
 - 3 个执行代理并发、各自 worktree、互不干扰（实测 24.5s 全部完成）
 - 网关按虚拟 key 把 token 归到 agent，可按开关录制完整请求/响应（`data/gateway/*.jsonl`）

@@ -107,6 +107,7 @@ export interface Task {
   goal: string;
   repoPath: string | null;
   baseRepo: string | null;
+  baseBranch?: string | null;
   state: TaskState;
   createdAt: number;
   finishedAt: number | null;

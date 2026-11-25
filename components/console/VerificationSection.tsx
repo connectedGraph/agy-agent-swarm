@@ -390,7 +390,7 @@ export function VerificationSection({ task }: { task: Task }) {
               icon={busy ? <Spinner size={12} /> : undefined}
               onClick={() => doPromote(false)}
             >
-              合入 {promote?.target || "main"}
+              合入 {promote?.target || task.baseBranch || "main"}
             </Btn>
             {verdict && !verdict.pass && (
               <Btn
