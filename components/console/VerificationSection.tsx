@@ -20,6 +20,137 @@ const MERGE_STATUS: Record<
   skipped: { tone: "neutral", label: "跳过", color: "var(--ink-3)" },
 };
 
+/* 从检查输出里挑出最能说明问题的一行；挑不到就取第一行非空内容 */
+function firstProblem(output: string) {
+  const lines = (output || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+  const hit =
+    lines.find((l) => /error|exception|traceback|fail|expected|no such file|not found|missing|denied/i.test(l)) ||
+    lines[0];
+  return hit.length > 180 ? hit.slice(0, 180) + "…" : hit;
+}
+
+type DiffRow = { path: string; total: number; plusChars: number; minusChars: number };
+
+function parseDiff(text: string) {
+  const rows: DiffRow[] = [];
+  let summary = "";
+  let insertions = 0;
+  let deletions = 0;
+  for (const line of text.split("\n")) {
+    if (/files? changed/.test(line)) {
+      summary = line.trim();
+      const im = /(\d+) insertions?/.exec(line);
+      const dm = /(\d+) deletions?/.exec(line);
+      insertions = im ? Number(im[1]) : 0;
+      deletions = dm ? Number(dm[1]) : 0;
+      continue;
+    }
+    const m = /^\s*(.+?)\s*\|\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const path = m[1].trim();
+    const rest = m[2].trim();
+    const num = /^(\d+)\s*(.*)$/.exec(rest);
+    if (!num) {
+      // 二进制文件（Bin 0 -> 123 bytes）或无法解析的统计
+      rows.push({ path, total: 0, plusChars: 0, minusChars: 0 });
+      continue;
+    }
+    const bar = num[2].trim();
+    rows.push({
+      path,
+      total: Number(num[1]),
+      plusChars: (bar.match(/\+/g) || []).length,
+      minusChars: (bar.match(/-/g) || []).length,
+    });
+  }
+  return rows.length ? { rows, summary, insertions, deletions } : null;
+}
+
+function diffTone(rows: DiffRow[]) {
+  const plusOnly = rows.every((r) => r.minusChars === 0);
+  const minusOnly = rows.every((r) => r.plusChars === 0);
+  const total = rows.reduce((n, r) => n + r.total, 0);
+  return {
+    label: plusOnly ? `+${total}` : minusOnly ? `−${total}` : `${total} 行`,
+    color: plusOnly ? "var(--ok)" : minusOnly ? "var(--bad)" : "var(--ink-2)",
+  };
+}
+
+function DiffStat({ text }: { text: string }) {
+  const diff = parseDiff(text);
+  if (!diff) {
+    return (
+      <pre className="stream mono" style={{ marginTop: 8, maxHeight: 180, overflow: "auto" }}>
+        {text}
+      </pre>
+    );
+  }
+  const maxTotal = Math.max(...diff.rows.map((r) => r.total), 1);
+  return (
+    <div style={{ marginTop: 8 }}>
+      {diff.rows.map((r) => {
+        const allPlus = r.minusChars === 0;
+        const allMinus = r.plusChars === 0;
+        const label = allPlus ? `+${r.total}` : allMinus ? `−${r.total}` : `${r.total} 行`;
+        const color = allPlus ? "var(--ok)" : allMinus ? "var(--bad)" : "var(--ink-2)";
+        const ratio = r.plusChars + r.minusChars ? r.plusChars / (r.plusChars + r.minusChars) : 1;
+        return (
+          <div key={r.path} className="flex items-center" style={{ gap: 10, height: 26 }}>
+            <span
+              className="code truncate"
+              title={r.path}
+              style={{ flex: 1, minWidth: 0, color: "var(--ink-2)" }}
+            >
+              {r.path}
+            </span>
+            <span
+              aria-hidden
+              style={{
+                display: "flex",
+                width: 72,
+                height: 4,
+                borderRadius: 999,
+                overflow: "hidden",
+                background: "var(--surface-3)",
+                flex: "none",
+              }}
+            >
+              <i
+                style={{
+                  display: "flex",
+                  width: `${(r.total / maxTotal) * 100}%`,
+                  height: "100%",
+                  minWidth: r.total ? 2 : 0,
+                }}
+              >
+                <i style={{ width: `${ratio * 100}%`, background: "var(--ok)" }} />
+                <i style={{ flex: 1, background: "var(--bad)" }} />
+              </i>
+            </span>
+            <span
+              className="num"
+              style={{ width: 44, textAlign: "right", fontSize: 11, color, flex: "none" }}
+            >
+              {r.total ? label : "bin"}
+            </span>
+          </div>
+        );
+      })}
+      {diff.summary && (
+        <div style={{ marginTop: 4, fontSize: 11, color: "var(--ink-3)" }}>
+          {[diff.insertions ? `${diff.insertions} 行新增` : "", diff.deletions ? `${diff.deletions} 行删除` : ""]
+            .filter(Boolean)
+            .join(" · ") || diff.summary}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function VerificationSection({ task }: { task: Task }) {
   const v = task.verification;
   const verdict = task.verdict;
@@ -42,6 +173,11 @@ export function VerificationSection({ task }: { task: Task }) {
 
   if (!v && !verdict && !task.merge.length) return null;
 
+  const checks = v?.checks || [];
+  const failedChecks = checks.filter((c) => !c.ok);
+  const diff = v?.diffStat ? parseDiff(v.diffStat) : null;
+  const firstFail = failedChecks.length ? firstProblem(failedChecks[0].output) : "";
+
   return (
     <Card style={{ padding: 18 }}>
       <div className="flex items-center gap-2 min-w-0">
@@ -57,6 +193,28 @@ export function VerificationSection({ task }: { task: Task }) {
           ) : null}
         </div>
       </div>
+
+      {failedChecks.length > 0 && (
+        <div style={{ marginTop: 14, borderLeft: "2px solid var(--bad)", paddingLeft: 12 }}>
+          <div className="flex flex-wrap items-baseline" style={{ gap: "2px 10px" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)" }}>
+              {failedChecks.length} 项检查未通过
+            </span>
+            <span style={{ fontSize: 11.5, color: "var(--ink-2)" }}>
+              {failedChecks.map((c) => c.name).join(" · ")}
+            </span>
+          </div>
+          {firstFail && (
+            <div
+              className="mono truncate"
+              title={firstFail}
+              style={{ marginTop: 3, fontSize: 10.5, color: "var(--bad)" }}
+            >
+              {firstFail}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-x-6 gap-y-5 min-[900px]:grid-cols-2" style={{ marginTop: 16 }}>
         {/* 分支合并 */}
@@ -108,15 +266,18 @@ export function VerificationSection({ task }: { task: Task }) {
             <Disclosure
               className="rounded-[8px] px-1.5 py-1 transition-colors duration-[120ms] hover:bg-[var(--hover)]"
               summary={
-                <span style={{ ...LABEL, fontWeight: 400 }}>合并后差异</span>
+                <span className="flex items-baseline" style={{ gap: 8 }}>
+                  <span style={{ ...LABEL, fontWeight: 400 }}>合并后差异</span>
+                  {diff && (
+                    <span className="code flex-none">
+                      {diff.rows.length} 个文件 ·{" "}
+                      <span style={{ color: diffTone(diff.rows).color }}>{diffTone(diff.rows).label}</span>
+                    </span>
+                  )}
+                </span>
               }
             >
-              <pre
-                className="stream mono"
-                style={{ marginTop: 8, maxHeight: 180, overflow: "auto" }}
-              >
-                {v.diffStat}
-              </pre>
+              <DiffStat text={v.diffStat} />
             </Disclosure>
           )}
         </div>
@@ -252,7 +413,18 @@ export function VerificationSection({ task }: { task: Task }) {
       </div>
 
       {promote && !promote.ok && (
-        <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--bad)" }}>{promote.detail}</div>
+        <div
+          style={{
+            marginTop: 10,
+            borderLeft: "2px solid var(--bad)",
+            paddingLeft: 10,
+            fontSize: 11.5,
+            lineHeight: 1.6,
+            color: "var(--bad)",
+          }}
+        >
+          {promote.detail}
+        </div>
       )}
     </Card>
   );

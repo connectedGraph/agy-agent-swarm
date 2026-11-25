@@ -5,6 +5,12 @@ import type { Task } from "@/lib/types";
 import { RichText } from "./RichText";
 import { fmt } from "./shared";
 
+// 从返工详情里取出触发本轮的具体检查项，比如「python 语法 (1 文件)」
+function roundCause(detail: string) {
+  const m = /\[check\]\s*([^\n—]+)/.exec(detail || "");
+  return m ? m[1].trim() : "";
+}
+
 export function ReworkSection({ task }: { task: Task }) {
   const rounds = task.rework || [];
   if (!rounds.length) return null;
@@ -27,6 +33,7 @@ export function ReworkSection({ task }: { task: Task }) {
         {rounds.map((r, i) => {
           const tokens = r.usage?.totalTokens || 0;
           const isFixer = r.target === "fixer";
+          const cause = roundCause(r.detail);
           return (
             <div
               key={i}
@@ -48,8 +55,9 @@ export function ReworkSection({ task }: { task: Task }) {
                         {r.who}
                       </span>
                     )}
-                    <span className="truncate flex-1" style={{ fontSize: 12, color: "var(--ink-3)", minWidth: 0 }}>
-                      {r.reason}
+                    <span className="truncate flex-1" style={{ fontSize: 12, minWidth: 0 }}>
+                      <span style={{ color: "var(--ink-3)" }}>{r.reason}</span>
+                      {cause && <span style={{ color: "var(--ink-2)" }}> · {cause}</span>}
                     </span>
                     <span className="flex items-center gap-2 flex-none">
                       <span style={{ fontSize: 11, color: r.ok ? "var(--ok)" : "var(--bad)" }}>

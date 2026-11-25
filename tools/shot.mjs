@@ -3,7 +3,7 @@
 // 截图前把本机绝对路径替换成中性路径，避免把个人目录带进公开图片。
 import { chromium } from "playwright-core";
 
-const [url, out, theme = "light", taskIndex = "0", w = "1440", h = "900", wait = "1400", scroll = "0"] =
+const [url, out, theme = "light", taskIndex = "0", w = "1440", h = "900", wait = "1400", scroll = "0", expand = "0"] =
   process.argv.slice(2);
 
 const browser = await chromium.launch({
@@ -39,6 +39,15 @@ if (Number(scroll) > 0) {
     if (main) main.scrollTop = y;
   }, Number(scroll));
   await page.waitForTimeout(500);
+}
+
+// 展开「合并后差异」
+if (expand === "1") {
+  const diffBtn = page.getByRole("button", { name: /合并后差异/ });
+  if (await diffBtn.count()) {
+    await diffBtn.first().click();
+    await page.waitForTimeout(500);
+  }
 }
 
 // 路径中性化

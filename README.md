@@ -73,8 +73,8 @@ SWARM_GATEWAY_URL=http://127.0.0.1:9000 SWARM_GATEWAY_KEY=vk-demo pnpm dev
 
 ![返工与判定](docs/screenshots/console-rework.png)
 
-<sub>目标要求「不要修改任何 .py」，但仓库本身就有一个语法错误的 .py。修复者复现后拒绝改，
-判定如实 FAIL；返工的开销（240.9k）在账本里单独一行，不混进工人花费。</sub>
+<sub>目标要求「不要修改任何 .py」，但仓库本身就有一个语法错误的 .py。卡片顶部直接摊出失败项和错误首行，
+修复者复现后拒绝改，判定如实 FAIL；返工开销（240.9k）在账本里单独一行，不混进工人花费。</sub>
 
 ## 提示词契约
 
