@@ -1013,6 +1013,7 @@ html.theme-switching * {
   margin-top: 6px;
 }
 .compose-hint {
+  margin-right: auto;
   font-size: 10.5px;
   color: var(--ink-4);
   overflow: hidden;
@@ -1020,7 +1021,6 @@ html.theme-switching * {
   text-overflow: ellipsis;
 }
 .compose-select {
-  margin-left: auto;
   font-size: 11px;
   color: var(--ink-2);
   background: var(--surface-2);
@@ -1029,8 +1029,26 @@ html.theme-switching * {
   padding: 4px 6px;
   outline: none;
 }
+.compose-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-size: 11.5px;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), opacity var(--dur-1) var(--ease);
+}
+.compose-run:hover {
+  background: var(--accent-soft);
+}
+.compose-run:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .compose-send {
-  margin-left: auto;
   width: 30px;
   height: 30px;
   border-radius: 999px;
@@ -1040,9 +1058,6 @@ html.theme-switching * {
   background: var(--ink);
   color: var(--canvas);
   transition: opacity var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
-}
-.compose-select + .compose-send {
-  margin-left: 0;
 }
 .compose-send:hover {
   opacity: 0.88;

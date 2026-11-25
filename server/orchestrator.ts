@@ -41,7 +41,7 @@ function short(id: string) {
 
 /* ---------------- 编排器 ---------------- */
 
-async function makeBossSession(cwd: string) {
+export async function makeBossSession(cwd: string) {
   const pi: any = await import("@earendil-works/pi-coding-agent");
   const modelRuntime = await pi.ModelRuntime.create();
   const model = modelRuntime.getModel(BOSS_PROVIDER, BOSS_MODEL);

@@ -1,4 +1,5 @@
 import { onEvent, listTasks } from "@/server/store";
+import { listChats } from "@/server/chats";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
           /* closed */
         }
       };
-      write({ type: "snapshot", tasks: listTasks() });
+      write({ type: "snapshot", tasks: listTasks(), chats: listChats() });
       off = onEvent(write);
       ping = setInterval(() => {
         try {

@@ -1,6 +1,6 @@
 "use client";
 
-import type { Task } from "@/lib/types";
+import type { Chat, Task } from "@/lib/types";
 import { Dot, Spinner, Tag } from "@/components/ui/kit";
 import { RichText } from "@/components/console/RichText";
 import { VerificationSection } from "@/components/console/VerificationSection";
@@ -17,19 +17,13 @@ function Meta({ label, live = false }: { label: string; live?: boolean }) {
   );
 }
 
-export function Transcript({ task, onOpenAgent }: { task: Task; onOpenAgent: (id: string) => void }) {
+function TaskBlocks({ task, onOpenAgent }: { task: Task; onOpenAgent: (id: string) => void }) {
   const usage = task.agents.reduce((n, a) => n + usageTotal(a), 0);
-  const followups = (task.messages || []).filter((m) => m.kind !== "goal");
   const plan = task.boss.planList || [];
   const planning = task.state === "planning" || task.boss.state === "planning";
 
   return (
-    <div className="transcript">
-      <div className="msg-row">
-        <div className="msg-user">{task.goal}</div>
-        <div className="msg-time">{clock(task.createdAt)}</div>
-      </div>
-
+    <>
       <div className="msg-boss">
         <Meta
           label={`编排器 · ${planning ? "规划中" : plan.length ? `已拆成 ${plan.length} 个任务` : STATE_LABEL[task.state] || task.state}`}
@@ -91,31 +85,6 @@ export function Transcript({ task, onOpenAgent }: { task: Task; onOpenAgent: (id
         </div>
       )}
 
-      {followups.map((m) => (
-        <div
-          key={m.id}
-          className="msg-row"
-          style={m.role === "user" ? { alignItems: "flex-end" } : undefined}
-        >
-          {m.role === "user" ? (
-            <div className="msg-user">{m.text}</div>
-          ) : (
-            <div className="msg-boss" style={{ width: "100%" }}>
-              <Meta label="编排器" live={!m.text} />
-              {m.text ? (
-                <RichText text={m.text} />
-              ) : (
-                <div className="msg-muted">
-                  <Spinner size={12} /> 正在回复…
-                </div>
-              )}
-              {m.error && <Tag tone="bad">会话失败</Tag>}
-            </div>
-          )}
-          <div className="msg-time">{clock(m.at)}</div>
-        </div>
-      ))}
-
       {isLive(task.state) && task.state !== "planning" && (
         <div className="msg-boss">
           <Meta label={`${STATE_LABEL[task.state] || task.state}…`} live />
@@ -135,6 +104,56 @@ export function Transcript({ task, onOpenAgent }: { task: Task; onOpenAgent: (id
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+function Message({ m }: { m: Chat["messages"][number] }) {
+  return (
+    <div className="msg-row" style={m.role === "user" ? { alignItems: "flex-end" } : undefined}>
+      {m.role === "user" ? (
+        <div className="msg-user">{m.text}</div>
+      ) : (
+        <div className="msg-boss" style={{ width: "100%" }}>
+          <Meta label="编排器" live={!m.text} />
+          {m.text ? (
+            <RichText text={m.text} />
+          ) : (
+            <div className="msg-muted">
+              <Spinner size={12} /> 正在回复…
+            </div>
+          )}
+          {m.error && <Tag tone="bad">会话失败</Tag>}
+        </div>
+      )}
+      <div className="msg-time">{clock(m.at)}</div>
+    </div>
+  );
+}
+
+export function Transcript({
+  chat,
+  task,
+  onOpenAgent,
+}: {
+  chat: Chat;
+  task: Task | null;
+  onOpenAgent: (id: string) => void;
+}) {
+  // 执行开始后的追问排在任务块之后，保持时间顺序
+  const cut = task ? task.createdAt : Number.POSITIVE_INFINITY;
+  const before = chat.messages.filter((m) => m.at <= cut);
+  const after = chat.messages.filter((m) => m.at > cut);
+
+  return (
+    <div className="transcript">
+      {before.map((m) => (
+        <Message key={m.id} m={m} />
+      ))}
+      {task && <TaskBlocks task={task} onOpenAgent={onOpenAgent} />}
+      {after.map((m) => (
+        <Message key={m.id} m={m} />
+      ))}
     </div>
   );
 }

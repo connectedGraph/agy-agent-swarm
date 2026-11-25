@@ -1,17 +1,18 @@
 "use client";
 
-import type { Task } from "@/lib/types";
+import type { Chat, Task } from "@/lib/types";
 import { Dot, Icon, ThemeToggle } from "@/components/ui/kit";
 import { BrandMark } from "@/components/console/Header";
 import { STATE_LABEL, STATE_TONE, clock, fmt, isLive } from "@/components/console/shared";
 
-function projectName(t: Task) {
-  if (!t.repoPath) return "默认工作区";
-  const parts = t.repoPath.split("/").filter(Boolean);
-  return parts[parts.length - 1] || t.repoPath;
+function projectName(repoPath: string | null) {
+  if (!repoPath) return "默认工作区";
+  const parts = repoPath.split("/").filter(Boolean);
+  return parts[parts.length - 1] || repoPath;
 }
 
 export function Sidebar({
+  chats,
   tasks,
   currentId,
   onNew,
@@ -20,6 +21,7 @@ export function Sidebar({
   gw,
   onToggleRecord,
 }: {
+  chats: Chat[];
   tasks: Task[];
   currentId: string | null;
   onNew: () => void;
@@ -28,11 +30,12 @@ export function Sidebar({
   gw: any;
   onToggleRecord: () => void;
 }) {
-  const groups = new Map<string, Task[]>();
-  for (const t of tasks) {
-    const key = projectName(t);
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const groups = new Map<string, Chat[]>();
+  for (const c of chats) {
+    const key = projectName(c.repoPath);
     const arr = groups.get(key) || [];
-    arr.push(t);
+    arr.push(c);
     groups.set(key, arr);
   }
 
@@ -58,37 +61,39 @@ export function Sidebar({
       </div>
 
       <div className="chat-side-scroll">
-        {!tasks.length && (
+        {!chats.length && (
           <div style={{ fontSize: 12, color: "var(--ink-4)", padding: "14px 10px", lineHeight: 1.7 }}>
-            还没有会话。新建一个，把目标交给编排器。
+            还没有会话。新建一个，先和编排器聊清楚目标。
           </div>
         )}
         {[...groups.entries()].map(([name, list]) => (
           <div className="side-group" key={name}>
             <div className="side-group-title">{name}</div>
-            {list.map((t) => {
-              const tone = STATE_TONE[t.state] || "neutral";
+            {list.map((c) => {
+              const task = c.taskId ? byId.get(c.taskId) : undefined;
+              const state = task?.state;
+              const tone = state ? STATE_TONE[state] || "neutral" : "neutral";
               return (
                 <button
-                  key={t.id}
+                  key={c.id}
                   className="side-item"
-                  data-active={t.id === currentId}
-                  onClick={() => onSelect(t.id)}
-                  title={t.goal}
+                  data-active={c.id === currentId}
+                  onClick={() => onSelect(c.id)}
+                  title={c.title}
                 >
                   <span style={{ paddingTop: 6, flex: "none" }}>
-                    <Dot tone={tone} live={isLive(t.state)} />
+                    <Dot tone={tone} live={state ? isLive(state) : false} />
                   </span>
                   <span style={{ minWidth: 0, flex: 1 }}>
-                    <span className="side-item-title">{t.goal}</span>
+                    <span className="side-item-title">{c.title}</span>
                     <span className="side-item-meta">
-                      {STATE_LABEL[t.state] || t.state}
+                      {state ? STATE_LABEL[state] || state : "对话中"}
                       <span>·</span>
-                      {clock(t.createdAt)}
-                      {t.totalUsage > 0 && (
+                      {clock(c.updatedAt)}
+                      {task && task.totalUsage > 0 && (
                         <>
                           <span>·</span>
-                          {fmt(t.totalUsage)}
+                          {fmt(task.totalUsage)}
                         </>
                       )}
                     </span>

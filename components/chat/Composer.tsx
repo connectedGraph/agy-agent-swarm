@@ -16,6 +16,9 @@ export function Composer({
   repoPath,
   setRepoPath,
   hint,
+  canRun = false,
+  runBusy = false,
+  onRun,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -29,6 +32,9 @@ export function Composer({
   repoPath: string;
   setRepoPath: (v: string) => void;
   hint?: string;
+  canRun?: boolean;
+  runBusy?: boolean;
+  onRun?: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -75,7 +81,13 @@ export function Composer({
           <span className="compose-hint">
             {hint || (isNew ? "契约与检查命令由编排器生成" : "Shift + Enter 换行")}
           </span>
-          {isNew && (
+          {canRun && (
+            <button className="compose-run" onClick={onRun} disabled={runBusy || busy}>
+              {runBusy ? <Spinner size={13} /> : null}
+              开始执行
+            </button>
+          )}
+          {(isNew || canRun) && (
             <select
               className="compose-select"
               value={agents}

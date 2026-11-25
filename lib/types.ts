@@ -112,6 +112,17 @@ export interface ChatMessage {
   error?: boolean;
 }
 
+// 会话（对话）与任务分离：先和编排器聊，确认后再交给执行代理
+export interface Chat {
+  id: string;
+  title: string;
+  repoPath: string | null;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+  taskId: string | null;
+}
+
 export interface Task {
   id: string;
   goal: string;
@@ -141,6 +152,7 @@ export type SwarmEvent =
   | { type: "agent"; taskId: string; agent: AgentRun }
   | { type: "boss"; taskId: string; boss: BossRun }
   | { type: "chat"; taskId: string; message: ChatMessage }
+  | { type: "session"; chat: Chat }
   | { type: "log"; taskId: string; agentId?: string; text: string; at: number }
   | { type: "record"; enabled: boolean }
   | { type: "gateway"; stats: GatewayStats };

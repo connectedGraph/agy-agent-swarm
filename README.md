@@ -113,10 +113,11 @@ SWARM_GATEWAY_URL=http://127.0.0.1:9000 SWARM_GATEWAY_KEY=vk-demo pnpm dev
 
 界面是一个会话式工作台（项目 → 会话），不是仪表盘：
 
-- **左：项目与会话**。按仓库分组列出历史会话，带状态、时间和累计 token；「新建会话」在底部输入目标与代理数。
-- **中：编排器会话**。用户目标是一条消息；编排器以助手身份给出契约与任务拆分，执行、合并、检查、返工、
-  独立验证与汇总按时间顺序接在同一条会话里。任务结束后可以继续追问编排器，回复走同一个 pi 会话。
-- **右：执行代理**。每个代理的状态、分支、token、改动文件与实时输出；点开看完整详情。下方是账本与网关。
+- **左：项目与会话**。按仓库分组列出历史会话；会话可能处于「对话中」或绑定一个执行任务。
+- **中：编排器会话**。先聊天：用户说目标，编排器追问约束、给出拆分与检查方案，这一阶段不派发任何代理。
+  确认后点「开始执行」，会话才变成任务，规划、执行、合并、检查、返工、独立验证与汇总按时间顺序接在同一条会话里。
+  任务结束后可以继续对话，回复走同一个 pi 会话。
+- **右：执行代理**。对话阶段为空；执行后列出每个代理的状态、分支、token、改动文件与实时输出。下方是账本与网关。
 
 任务状态：规划中 → 集群执行 → 合并中 → 验证中 →（返工中）→ 汇总中 → 完成 / 失败。
 
@@ -219,12 +220,16 @@ token 有三个来源，按角色分账：
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/api/tasks` | 任务列表 |
-| POST | `/api/tasks` | 提交任务：`{goal, agents?, repoPath?}` |
+| GET | `/api/chats` | 会话列表 |
+| POST | `/api/chats` | 新建会话并发第一条消息：`{text, repoPath?}`（只对话，不执行） |
+| POST | `/api/chats/:id/messages` | 继续对话：`{text}`，复用同一个 pi 会话 |
+| POST | `/api/chats/:id/run` | 确认执行：`{agents?}`，把最后一条用户消息变成任务 |
+| POST | `/api/tasks` | 直接提交任务（跳过对话）：`{goal, agents?, repoPath?}` |
 | GET | `/api/tasks/:id` | 单个任务快照 |
 | GET | `/api/tasks/:id/diff` | 各执行代理 worktree 的改动统计 |
-| POST | `/api/tasks/:id/messages` | 追问编排器：`{text}`，回复走同一个 pi 会话 |
+| POST | `/api/tasks/:id/messages` | 旧任务的追问：`{text}` |
 | POST | `/api/tasks/:id/promote` | 合回主干：`{force?}` |
-| GET | `/api/stream` | SSE 事件流（snapshot / task / agent / boss / chat） |
+| GET | `/api/stream` | SSE 事件流（snapshot / session / task / agent / boss / chat） |
 | GET/POST | `/api/gateway` | 网关状态；`{action:"record"\|"keys", payload}` |
 
 ## 环境变量
@@ -264,6 +269,7 @@ token 有三个来源，按角色分账：
 - **一键合主干**：`main` 拿到 `Merge branch 'swarm/…/integration'`（commit `aef2a15`），验证未通过的任务被拒绝合入
 - **持久化**：重启后任务、账本、返工记录与合主干结果原样恢复
 - **会话式追问**：任务结束后追问「为什么判定通过」，编排器在同一会话上下文里作答，消息落盘
+- **对话与执行分离**：发「你好」只会得到一段回复，不创建任务、不派发代理；点「开始执行」才会进入集群流程
 - **standalone 部署**：`dist/standalone/server.js` + systemd user 单元常驻 127.0.0.1:3100，
   页面、SSE、静态资源与追问接口均可用
 
@@ -292,6 +298,7 @@ components/
 lib/types.ts    共享类型
 DESIGN.md       视觉规范：6-3-1 配色预算、字号、间距、动效、禁止项
 server/
+  chats.ts         会话：对话、编排器回复、从会话启动任务
   orchestrator.ts  规划、派发、合并、返工、验证、裁决、合主干
   acp.ts           agy ACP 客户端 + bubblewrap 沙箱
   gateway.ts       Gemini 兼容录制网关
@@ -305,6 +312,7 @@ tools/
 deploy/
   agy-agent-swarm.service  systemd user 单元（standalone 常驻 3100）
 data/           运行时数据（不入库）
+  chats/<chatId>.json 会话记录（对话、绑定的任务）
   runs/<taskId>/   各代理 worktree、integration、orchestrator
   tasks/<taskId>.json  任务快照
   gateway/*.jsonl  网关录制
