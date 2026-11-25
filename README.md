@@ -4,9 +4,9 @@ Agent 集群编排站。一个包工头（pi SDK + DeepSeek）把目标拆成并
 Antigravity 子代理（`agy acp`），合并、验收、返工、判定、合回主干全部在页面上看得见，
 每一笔 token 都落到账本上。
 
-`Next.js 16` · `React 19` · `pi SDK` · `agy acp` · `git worktree` · `SSE`
+`Next.js 16` · `React 19` · `pi SDK` · `agy acp` · `git worktree` · `SSE` · 深浅双主题
 
-![控制台](docs/screenshots/console.png)
+![控制台](docs/screenshots/console-light.png)
 
 <sub>一个真实任务：两个工人各自实现并自测，合并后 5 条检查全部 PASS，独立验证者也通过了，最后合入主干。</sub>
 
@@ -62,6 +62,12 @@ SWARM_GATEWAY_URL=http://127.0.0.1:9000 SWARM_GATEWAY_KEY=vk-demo pnpm dev
   以及「录制完整 API 报文」开关。
 
 任务状态：规划中 → 集群执行 → 合并中 → 验收中 →（返工中）→ 汇总中 → 完成/失败。
+
+主题默认跟随系统，右上角可手动切换；`⌘K` / `Ctrl+K` 聚焦目标输入，`Esc` 关闭工人详情。
+
+![深色主题](docs/screenshots/console-dark.png)
+
+<sub>同一页面的深色形态：中性近黑底、单一靛色强调，状态色只出现在小圆点上。</sub>
 
 验收失败的形态长这样：
 
@@ -213,9 +219,13 @@ token 有三个来源，全部按角色分开记：
 ## 目录
 
 ```
-app/            页面与 API 路由
-components/     Console（单页控制台）
+app/            页面、API 路由、主题启动脚本
+components/
+  Console.tsx   状态、SSE 与三栏编排
+  console/      任务流、舞台、验收、返工、账本、网关、工人详情
+  ui/kit.tsx    基础组件（卡片、标签、按钮、展开、主题切换）
 lib/types.ts    共享类型
+DESIGN.md       视觉规范：6-3-1 配色预算、字号、间距、动效、禁止项
 server/
   orchestrator.ts  规划、派发、合并、返工、验收、判定、合主干
   acp.ts           agy ACP 客户端
@@ -223,13 +233,13 @@ server/
   prompts.ts       提示词契约
   store.ts         任务表 + 事件总线 + 落盘恢复
 tools/
-  shot.mjs         控制台截图
+  shot.mjs         控制台截图（含主题与路径中性化）
   worker-shot.mjs  给子代理用的截图工具
 data/           运行时数据（不入库）
   runs/<taskId>/   各工人 worktree、integration、orchestrator
   tasks/<taskId>.json  任务快照
   gateway/*.jsonl  网关录制
-docs/screenshots/  控制台截图
+docs/screenshots/  控制台截图（浅色 / 深色 / 返工）
 ```
 
 ## License
