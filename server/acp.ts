@@ -39,17 +39,17 @@ const RW_HOME = [
    网络保持共享（模型 API 需要），PID/IPC/UTS 隔离。 */
 function spawnSpec(cwd: string, extraArgs: string[]) {
   const agyArgs = ["acp", "--dangerously-skip-permissions", ...extraArgs];
-  if (SANDBOX_MODE === "off" || !existsSync(BWRAP_BIN)) {
+  if (SANDBOX_MODE === "off" || !existsSync(/*turbopackIgnore: true*/ BWRAP_BIN)) {
     return { cmd: AGY_BIN, args: agyArgs };
   }
   try {
-    const real = realpathSync(cwd);
+    const real = realpathSync(/*turbopackIgnore: true*/ cwd);
     const args = [
       "--ro-bind",
       "/",
       "/",
       ...["/data", "/sys"]
-        .filter((p) => existsSync(p))
+        .filter((p) => existsSync(/*turbopackIgnore: true*/ p))
         .flatMap((p) => ["--ro-bind", p, p]),
       "--dev-bind",
       "/dev",
@@ -61,12 +61,12 @@ function spawnSpec(cwd: string, extraArgs: string[]) {
     ];
     const uid = typeof process.getuid === "function" ? process.getuid() : null;
     const runUser = uid === null ? null : `/run/user/${uid}`;
-    if (runUser && existsSync(runUser)) args.push("--bind", runUser, runUser);
+    if (runUser && existsSync(/*turbopackIgnore: true*/ runUser)) args.push("--bind", runUser, runUser);
     args.push("--bind", real, real);
     const binds = new Set<string>();
     for (const rel of RW_HOME) {
-      const p = join(process.env.HOME || "", rel);
-      if (existsSync(p)) binds.add(realpathSync(p));
+      const p = join(/*turbopackIgnore: true*/ process.env.HOME || "", rel);
+      if (existsSync(/*turbopackIgnore: true*/ p)) binds.add(realpathSync(/*turbopackIgnore: true*/ p));
     }
     for (const p of binds) args.push("--bind", p, p);
     args.push(
@@ -98,7 +98,7 @@ export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
 
   return new Promise((resolve) => {
     const spec = spawnSpec(cwd, extraArgs);
-    const child = spawn(spec.cmd, spec.args, {
+    const child = spawn(/*turbopackIgnore: true*/ spec.cmd, spec.args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, LANG: "C.UTF-8", AGENT_ID: agentId || "", ...env },

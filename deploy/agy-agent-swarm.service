@@ -1,0 +1,31 @@
+[Unit]
+Description=agy-agent-swarm 控制台 (127.0.0.1:3100)
+Documentation=file:///home/rap/0_workspace/02_projects/agy-agent-swarm/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rap/0_workspace/02_projects/agy-agent-swarm
+Environment=PORT=3100
+Environment=HOSTNAME=127.0.0.1
+# standalone 的 server.js 会 chdir 到部署目录，仓库内文件与数据目录一律用绝对路径
+Environment=SWARM_APP_ROOT=/home/rap/0_workspace/02_projects/agy-agent-swarm
+Environment=SWARM_TASKS_DIR=/home/rap/0_workspace/02_projects/agy-agent-swarm/data/tasks
+Environment=SWARM_ROOT=/home/rap/0_workspace/02_projects/agy-agent-swarm/data/runs
+Environment=AGY_BIN=/home/rap/.local/bin/agy
+Environment=BWRAP_BIN=/usr/bin/bwrap
+Environment=HOME=/home/rap
+Environment=PATH=/home/rap/.nvm/versions/node/v24.21.0/bin:/home/rap/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/rap/.nvm/versions/node/v24.21.0/bin/node /home/rap/0_workspace/02_projects/agy-agent-swarm/dist/standalone/server.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=mixed
+
+# 故意不做 ProtectHome/ProtectSystem 沙箱：
+# 编排器要读取用户的 base 仓库、在 data/ 下建 worktree，并 spawn bwrap + agy，
+# 沙箱化 systemd 单元会让这些路径不可见。隔离由执行侧的 bubblewrap 负责。
+
+[Install]
+WantedBy=default.target

@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+MODE="${1:-}"
+
 echo "==> 检查运行时"
 command -v node >/dev/null || { echo "缺少 node"; exit 1; }
 command -v pnpm >/dev/null || { echo "缺少 pnpm"; exit 1; }
@@ -37,6 +39,26 @@ else
 fi
 
 echo
+if [ "$MODE" = "--service" ]; then
+  echo "==> 构建 standalone 产物"
+  ./tools/standalone.sh
+
+  echo "==> 安装并启用 systemd user 单元"
+  UNIT_DIR="$HOME/.config/systemd/user"
+  mkdir -p "$UNIT_DIR"
+  cp deploy/agy-agent-swarm.service "$UNIT_DIR/agy-agent-swarm.service"
+  systemctl --user daemon-reload
+  systemctl --user enable agy-agent-swarm.service
+  systemctl --user restart agy-agent-swarm.service
+  sleep 2
+  systemctl --user --no-pager --lines=0 status agy-agent-swarm.service || true
+  echo
+  echo "完成。控制台: http://127.0.0.1:3100"
+  echo "  日志: journalctl --user -u agy-agent-swarm -f"
+  exit 0
+fi
+
 echo "完成。"
 echo "  控制台: pnpm dev     (http://localhost:3100)"
+echo "  常驻:   ./install.sh --service  (standalone 构建 + systemd user 单元)"
 echo "  网关:   pnpm gateway (http://127.0.0.1:9000)"

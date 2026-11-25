@@ -58,7 +58,24 @@ node tools/sandbox-check.mjs   # 沙箱自检：在 bubblewrap 里完成 ACP 握
 pnpm dev              # http://localhost:3100
 ```
 
-生产模式：`pnpm build && pnpm start`（端口 3100）。
+生产部署走 standalone，不需要 `next start`，也不依赖开发服务器：
+
+```bash
+./install.sh --service   # 构建 dist/standalone + 安装并启动 systemd user 单元
+```
+
+`tools/standalone.sh` 负责构建：`next build`（`output: "standalone"`）→ 组装 `dist/standalone/`
+（复制 `.next/static`、补齐 pnpm 外部包软链）→ 删除运行时目录。启动入口是 `dist/standalone/server.js`，
+监听 `127.0.0.1:3100`；服务单元见 `deploy/agy-agent-swarm.service`，日志走 `journalctl --user -u agy-agent-swarm`。
+
+`data/`、`dist/`、`.git/` 不会进入产物（`outputFileTracingExcludes`）；注意别在排除规则里写
+`./server/**` 这类与 `.next/server` 同名的路径，Turbopack 会连 `.next/server/chunks` 一起剔掉。
+
+也可以直接手动跑：
+
+```bash
+PORT=3100 HOSTNAME=127.0.0.1 SWARM_APP_ROOT=$PWD node dist/standalone/server.js
+```
 
 可选：启动录制网关，让需要按 API 计量的代理走它。
 
@@ -215,6 +232,8 @@ token 有三个来源，按角色分账：
 | `AGY_BIN` | `~/.local/bin/agy` | Antigravity CLI |
 | `SWARM_SANDBOX` | `bwrap` | `off` 关闭 bubblewrap 沙箱 |
 | `BWRAP_BIN` | `/usr/bin/bwrap` | bubblewrap 路径 |
+| `SWARM_APP_ROOT` | `process.cwd()` | 仓库根目录；standalone 下 `server.js` 会 chdir，必须显式指定 |
+| `PORT` / `HOSTNAME` | `3000` / `0.0.0.0` | standalone server 监听地址（部署脚本用 3100 / 127.0.0.1） |
 | `SWARM_ROOT` | `./data/runs` | 每个任务的 worktree 根目录 |
 | `SWARM_AGENT_TIMEOUT_MS` | `600000` | 单个执行代理超时 |
 | `SWARM_VERIFIER_TIMEOUT_MS` | `600000` | 独立验证器超时 |
@@ -274,7 +293,10 @@ server/
 tools/
   shot.mjs         控制台截图（主题、滚动、路径中性化）
   sandbox-check.mjs  bubblewrap + ACP 握手自检
+  standalone.sh     构建 dist/standalone 产物
   worker-shot.mjs  给执行代理用的截图工具
+deploy/
+  agy-agent-swarm.service  systemd user 单元（standalone 常驻 3100）
 data/           运行时数据（不入库）
   runs/<taskId>/   各代理 worktree、integration、orchestrator
   tasks/<taskId>.json  任务快照

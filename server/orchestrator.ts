@@ -7,7 +7,9 @@ import { getTask, putTask, emit, store } from "./store.ts";
 import { BOSS_JUDGE_SYSTEM, BOSS_JUDGE_TASK, BOSS_PLAN_SYSTEM, BOSS_PLAN_TASK, BOSS_SUMMARY_TASK, FIXER_TASK, REWORK_AGENT_TASK, VERIFIER_TASK, WORKER_PREAMBLE, WORKER_TASK } from "./prompts.ts";
 import type { AgentRun, CheckResult, MergeResult, PromoteResult, Task, Verification } from "../lib/types.ts";
 
-const ROOT = process.env.SWARM_ROOT || join(process.cwd(), "data", "runs");
+// standalone 模式下 server.js 会 chdir 到部署目录，仓库内的运行时文件用显式根目录定位
+const APP_ROOT = process.env.SWARM_APP_ROOT || process.cwd();
+const ROOT = process.env.SWARM_ROOT || join(APP_ROOT, "data", "runs");
 const BOSS_PROVIDER = process.env.BOSS_PROVIDER || "1";
 const BOSS_MODEL = process.env.BOSS_MODEL || "deepseek-v4.1-flash";
 const GIT = ["-c", "user.email=swarm@local", "-c", "user.name=swarm"];
@@ -18,7 +20,7 @@ const CODENAMES = [
 ];
 
 function sh(cmd: string, args: string[], cwd?: string) {
-  return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync(/*turbopackIgnore: true*/ cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
 function trySh(cmd: string, args: string[], cwd?: string): { ok: boolean; out: string; err: string } {
@@ -356,7 +358,7 @@ function runChecks(dir: string, checks: { name: string; command: string }[]): Ch
   for (const c of checks) {
     const t0 = Date.now();
     try {
-      const out = execFileSync("bash", ["-lc", c.command], {
+      const out = execFileSync(/*turbopackIgnore: true*/ "bash", ["-lc", c.command], {
         cwd: dir,
         encoding: "utf8",
         timeout: 120_000,
@@ -489,8 +491,8 @@ async function runAgent(task: Task, agent: AgentRun, opts?: { reason?: string; d
 
   const env: Record<string, string> = {
     AGENT_ID: agent.id,
-    SWARM_SHOT_JS: join(process.cwd(), "tools", "worker-shot.mjs"),
-    SWARM_PLAYWRIGHT_CORE: join(process.cwd(), "node_modules", "playwright-core", "index.js"),
+    SWARM_SHOT_JS: join(APP_ROOT, "tools", "worker-shot.mjs"),
+    SWARM_PLAYWRIGHT_CORE: join(APP_ROOT, "node_modules", "playwright-core", "index.js"),
   };
   if (process.env.SWARM_GATEWAY_URL) {
     env.GOOGLE_GEMINI_BASE_URL = process.env.SWARM_GATEWAY_URL;

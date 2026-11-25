@@ -16,8 +16,10 @@ const g = globalThis as unknown as {
 
 const TASKS_DIR = process.env.SWARM_TASKS_DIR || join(process.cwd(), "data", "tasks");
 
+// TASKS_DIR 是运行时目录（standalone 下由 SWARM_TASKS_DIR 指定），
+// 标上 turbopackIgnore 阻止构建期把整个仓库当成依赖产物打进 standalone
 function taskFile(id: string) {
-  return join(TASKS_DIR, `${id}.json`);
+  return join(/*turbopackIgnore: true*/ TASKS_DIR, `${id}.json`);
 }
 
 /* ---------------- 落盘 ---------------- */
@@ -79,11 +81,11 @@ function markInterrupted(t: Task): boolean {
 function loadTasks(): Map<string, Task> {
   const tasks = new Map<string, Task>();
   try {
-    if (!existsSync(TASKS_DIR)) return tasks;
-    for (const name of readdirSync(TASKS_DIR)) {
+    if (!existsSync(/*turbopackIgnore: true*/ TASKS_DIR)) return tasks;
+    for (const name of readdirSync(/*turbopackIgnore: true*/ TASKS_DIR)) {
       if (!name.endsWith(".json")) continue;
       try {
-        const t = JSON.parse(readFileSync(join(TASKS_DIR, name), "utf8")) as Task;
+        const t = JSON.parse(readFileSync(join(/*turbopackIgnore: true*/ TASKS_DIR, name), "utf8")) as Task;
         if (!t?.id || !Array.isArray(t.agents)) continue;
         t.rework = Array.isArray(t.rework) ? t.rework : [];
         t.promote = t.promote || null;
