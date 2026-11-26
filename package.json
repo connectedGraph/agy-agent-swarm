@@ -7,7 +7,9 @@
     "dev": "next dev -p 3100",
     "build": "next build",
     "start": "next start -p 3100",
-    "gateway": "node --experimental-strip-types server/gateway.ts"
+    "gateway": "node --experimental-strip-types server/gateway.ts",
+    "swarm": "node bin/swarm.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.*"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.6.0",

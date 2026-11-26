@@ -38,6 +38,16 @@ else
   echo "    警告：~/.pi/agent/models.json 里没有 8787 provider，编排器会起不来"
 fi
 
+echo "==> 安装命令行"
+chmod +x bin/swarm.mjs
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$PWD/bin/swarm.mjs" "$HOME/.local/bin/swarm"
+echo "    ~/.local/bin/swarm -> $PWD/bin/swarm.mjs"
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) echo "    警告：$HOME/.local/bin 不在 PATH，命令行需要在 PATH 里才能直接调用 swarm" ;;
+esac
+
 echo
 if [ "$MODE" = "--service" ]; then
   echo "==> 构建 standalone 产物"
@@ -54,11 +64,13 @@ if [ "$MODE" = "--service" ]; then
   systemctl --user --no-pager --lines=0 status agy-agent-swarm.service || true
   echo
   echo "完成。控制台: http://127.0.0.1:3100"
+  echo "  命令行: swarm status / swarm chat"
   echo "  日志: journalctl --user -u agy-agent-swarm -f"
   exit 0
 fi
 
 echo "完成。"
 echo "  控制台: pnpm dev     (http://localhost:3100)"
+echo "  命令行: swarm tasks / swarm chat (服务没起来时会自动启动)"
 echo "  常驻:   ./install.sh --service  (standalone 构建 + systemd user 单元)"
 echo "  网关:   pnpm gateway (http://127.0.0.1:9000)"
