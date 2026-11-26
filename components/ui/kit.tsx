@@ -57,6 +57,27 @@ const ICONS = {
   ),
   spinner: <path d="M12 3a9 9 0 1 0 9 9" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  // 纸飞机：发送语义，替代原来表意不清的对勾
+  send: <path d="m4 12 16-8-6 16-2.7-6.3L4 12Zm7.3 1.7L20 4" />,
+  pencil: (
+    <>
+      <path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z" />
+      <path d="m13.5 6.5 4 4" />
+    </>
+  ),
+  trash: <path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5" />,
+  stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  // 会话列表抽屉
+  menu: <path d="M4 7h16M4 12h16M4 17h16" />,
+  // 执行代理栏开关
+  panel: (
+    <>
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path d="M15 4.5v15" />
+    </>
+  ),
+  // 回到底部
+  down: <path d="M12 5v14M6 13l6 6 6-6" />,
 } as const;
 
 export type IconName = keyof typeof ICONS;

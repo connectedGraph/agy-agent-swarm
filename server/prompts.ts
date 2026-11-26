@@ -44,6 +44,7 @@ ${goal}
 
 约束：
 - tasks 数量必须等于 ${count}。
+- 每个 task 的 name 必须非空且唯一；depends_on 只能引用本列表里的 name，不能依赖自己，也不能成环。
 - 每个 scope 里不要出现别人 scope 里的路径。
 - acceptance 必须能被命令或肉眼截图验证，不要写「代码质量好」这类空话。
 - 如果目标涉及界面，至少有一个任务的 evidence 必须包含截图，且截图路径必须落在该任务的 scope 内（例如 evidence/xxx.png），不能写到 /tmp 或仓库外。
@@ -169,7 +170,7 @@ PASS: 一句话理由
 或
 FAIL: 一句话理由（指出最关键的一项缺失）
 
-不要输出别的，不要调用工具。`;
+不要输出 JSON、markdown 或别的文字，不要调用工具。`;
 
 export const BOSS_SUMMARY_TASK = (ctx: string) => `请用不超过 180 字总结本次执行结果。
 

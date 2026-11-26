@@ -25,7 +25,13 @@ export function ReworkSection({ task }: { task: Task }) {
           <span className="num">{rounds.length}</span> 轮
         </Tag>
         <span className="ml-auto" style={{ fontSize: 11, color: "var(--ink-3)" }}>
-          <span className="num">{fixed}</span> 轮修复
+          {fixed > 0 ? (
+            <>
+              <span className="num">{fixed}</span> / <span className="num">{rounds.length}</span> 轮产生改动
+            </>
+          ) : (
+            <><span className="num">{rounds.length}</span> 轮，均未产生改动</>
+          )}
         </span>
       </div>
 

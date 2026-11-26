@@ -64,4 +64,5 @@
 
 ## 参照实现
 
-`components/console/AgentCard.tsx` 是标杆：所有新模块的密度、圆角、描边、字重、动效以它为准。
+`components/chat/AgentRail.tsx` 是标杆：代理卡、右栏密度与状态色用法以它为准，
+展开后的详情复用 `components/console/AgentDetail.tsx`。所有新模块的密度、圆角、描边、字重、动效与它们保持一致。

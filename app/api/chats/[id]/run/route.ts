@@ -1,4 +1,4 @@
-import { getChat, startChatTask } from "@/server/chats";
+import { ChatBusyError, getChat, startChatTask } from "@/server/chats";
 
 export const dynamic = "force-dynamic";
 
@@ -8,9 +8,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!chat) return Response.json({ error: "not found" }, { status: 404 });
   const body = await req.json().catch(() => ({} as any));
   try {
-    const task = startChatTask(chat, Math.max(1, Math.min(8, Number(body?.agents) || 3)));
+    const task = startChatTask(chat, { agents: body?.agents, goal: body?.goal });
     return Response.json({ task, chat });
   } catch (e: any) {
-    return Response.json({ error: e?.message || String(e) }, { status: 400 });
+    const status = e instanceof ChatBusyError || e?.code === "BUSY" ? 409 : 400;
+    return Response.json({ error: e?.message || String(e) }, { status });
   }
 }

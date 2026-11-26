@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { runAgyTask } from "./acp.ts";
-import { getTask, putTask, emit, store } from "./store.ts";
-import { BOSS_CHAT_SYSTEM, BOSS_JUDGE_SYSTEM, BOSS_JUDGE_TASK, BOSS_PLAN_SYSTEM, BOSS_PLAN_TASK, BOSS_SUMMARY_TASK, FIXER_TASK, REWORK_AGENT_TASK, VERIFIER_TASK, WORKER_PREAMBLE, WORKER_TASK } from "./prompts.ts";
-import type { AgentRun, ChatMessage, CheckResult, MergeResult, PromoteResult, Task, Verification } from "../lib/types.ts";
+import { runAgyTask, runSandboxedCommand } from "./acp.ts";
+import { createDeltaBatcher, getTask, putTask, emit, removeTask, store } from "./store.ts";
+import { BOSS_JUDGE_SYSTEM, BOSS_JUDGE_TASK, BOSS_PLAN_SYSTEM, BOSS_PLAN_TASK, BOSS_SUMMARY_TASK, FIXER_TASK, REWORK_AGENT_TASK, VERIFIER_TASK, WORKER_PREAMBLE, WORKER_TASK } from "./prompts.ts";
+import type { AgentRun, CheckResult, MergeResult, PromoteResult, Task, TaskState, Usage, Verification } from "../lib/types.ts";
 
 // standalone 模式下 server.js 会 chdir 到部署目录，仓库内的运行时文件用显式根目录定位
 const APP_ROOT = process.env.SWARM_APP_ROOT || process.cwd();
@@ -56,6 +57,11 @@ export async function makeBossSession(cwd: string) {
   return session;
 }
 
+// pi 会话里的 usage 是整段会话的累计值；记账必须按阶段取增量，否则后写的阶段会把前面的盖掉。
+// 这里缓存「上次读到的累计快照」，usageDelta 返回本次新增的部分（字段级相减）。
+type UsageAcc = Usage & { cacheRead?: number; cacheWrite?: number };
+const lastUsage = new WeakMap<object, Record<string, number>>();
+
 function collectPiusage(session: any): Record<string, number> | null {
   const msgs = session.messages || [];
   const us = msgs.filter((m: any) => m.usage).map((m: any) => m.usage);
@@ -73,148 +79,348 @@ function collectPiusage(session: any): Record<string, number> | null {
   );
 }
 
-/* ---------------- 编排器会话 ---------------- */
-
-function pushMessage(task: Task, msg: ChatMessage) {
-  if (!task.messages) task.messages = [];
-  task.messages.push(msg);
-  emit({ type: "chat", taskId: task.id, message: msg });
+// 本次调用相对上次读取新增的用量；会话没有新消息时返回 null
+export function usageDelta(session: any): UsageAcc | null {
+  const cur = collectPiusage(session);
+  if (!cur) return null;
+  const prev = lastUsage.get(session) || {};
+  lastUsage.set(session, cur);
+  const delta: UsageAcc = {
+    input: (cur.input || 0) - (prev.input || 0),
+    output: (cur.output || 0) - (prev.output || 0),
+    cacheRead: (cur.cacheRead || 0) - (prev.cacheRead || 0),
+    cacheWrite: (cur.cacheWrite || 0) - (prev.cacheWrite || 0),
+    totalTokens: (cur.totalTokens || 0) - (prev.totalTokens || 0),
+  };
+  const changed = (delta.totalTokens || 0) > 0 || (delta.input || 0) > 0 || (delta.output || 0) > 0;
+  return changed ? delta : null;
 }
 
-// 追问复用同一个 pi 会话；进程重启后按任务上下文重新起步
-const bossChatSessions = new Map<string, any>();
-
-function bossContext(task: Task): string {
-  return [
-    `目标：${task.goal}`,
-    `状态：${task.state}`,
-    task.boss.planList.length
-      ? `任务拆分：\n${task.boss.planList.map((p, i) => `- ${i + 1}. ${p.name}: ${p.task}`).join("\n")}`
-      : "",
-    task.verification
-      ? `自动检查：${task.verification.checks.map((c) => `${c.ok ? "PASS" : "FAIL"} ${c.name}`).join("；") || "无"}`
-      : "",
-    task.verdict ? `裁决：${task.verdict.pass ? "通过" : "未通过"}；理由：${task.verdict.reasons.join("；")}` : "",
-    task.summary ? `汇总：${task.summary}` : "",
-    task.promote ? `合回主干：${task.promote.ok ? "成功" : "未完成"}（${task.promote.target}）` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+// 把增量累加进已经记账的 Usage；保持 Usage 原有字段结构，只做加法
+function addUsage(base: Usage | null, delta: Usage | null): Usage | null {
+  if (!delta) return base ?? null;
+  const b = (base || {}) as UsageAcc;
+  const d = delta as UsageAcc;
+  const out: UsageAcc = {
+    input: (b.input || 0) + (d.input || 0),
+    output: (b.output || 0) + (d.output || 0),
+    cacheRead: (b.cacheRead || 0) + (d.cacheRead || 0),
+    cacheWrite: (b.cacheWrite || 0) + (d.cacheWrite || 0),
+    totalTokens: (b.totalTokens || 0) + (d.totalTokens || 0),
+  };
+  return out;
 }
 
-export async function sendBossMessage(task: Task, text: string): Promise<ChatMessage> {
-  const clean = String(text || "").trim().slice(0, 4000);
-  if (!clean) throw new Error("消息为空");
-  if (task.state !== "done" && task.state !== "failed") throw new Error("任务还在执行，先等这一轮结束");
+/* ---------------- 任务取消与系统消息 ---------------- */
 
-  const userMsg: ChatMessage = { id: randomUUID(), role: "user", text: clean, at: Date.now() };
-  pushMessage(task, userMsg);
-  putTask(task);
+// Next 在不同路由/热更新下可能加载多份模块，跨请求共享的状态一律挂在 globalThis
+// 运行中任务的 AbortController；runTask 各阶段检查 signal，取消后不再 spawn 下一批代理
+const gswarm = globalThis as unknown as {
+  __swarmTaskControllers?: Map<string, AbortController>;
+  __swarmDeletedTasks?: Set<string>;
+  __swarmSystemSink?: ((taskId: string, text: string, kind: "event" | "error") => void) | null;
+};
+const controllers = (gswarm.__swarmTaskControllers ||= new Map<string, AbortController>());
+// 已被删除的任务：runTask 收尾时不要再把快照写回 store/磁盘
+const deletedTasks = (gswarm.__swarmDeletedTasks ||= new Set<string>());
 
-  const reply: ChatMessage = { id: randomUUID(), role: "boss", text: "", at: Date.now(), kind: "reply" };
-  pushMessage(task, reply);
+class TaskCancelled extends Error {
+  constructor() {
+    super("已取消");
+    this.name = "TaskCancelled";
+  }
+}
 
+function isCancelled(e: any, signal?: AbortSignal): boolean {
+  return e instanceof TaskCancelled || !!signal?.aborted;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new TaskCancelled();
+}
+
+// 让不可中断的 promise（pi 会话）在取消时立刻返回，底层请求自行收尾
+function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(new TaskCancelled());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new TaskCancelled());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+// 「开始/取消/失败」要落成会话里的系统消息；编排器不反向依赖 chats，
+// 由 chats 启动时注册 sink，避免循环 import。
+export function setSystemMessageSink(fn: (taskId: string, text: string, kind: "event" | "error") => void) {
+  gswarm.__swarmSystemSink = fn;
+}
+
+function noteSystem(taskId: string, text: string, kind: "event" | "error") {
   try {
-    const orchDir = join(ROOT, task.id, "orchestrator");
-    mkdirSync(orchDir, { recursive: true });
-    let session = bossChatSessions.get(task.id);
-    if (!session) {
-      session = await makeBossSession(orchDir);
-      bossChatSessions.set(task.id, session);
-    }
+    gswarm.__swarmSystemSink?.(taskId, text, kind);
+  } catch {
+    /* 会话侧失败不影响任务 */
+  }
+}
 
-    let acc = "";
-    const unsub = session.subscribe((ev: any) => {
-      if (ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta") {
-        acc += ev.assistantMessageEvent.delta;
-        reply.text = acc;
-        emit({ type: "chat", taskId: task.id, message: reply });
+const LIVE_STATES = new Set(["planning", "running", "merging", "verifying", "rework", "aggregating"]);
+
+/* ---------------- 任务状态机 ---------------- */
+
+// 允许的迁移表。终态不再迁移；done 只表示流程结束，成功与否看 verdict。
+const TASK_TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
+  planning: ["running", "failed", "cancelled"],
+  running: ["merging", "failed", "cancelled"],
+  merging: ["verifying", "failed", "cancelled"],
+  verifying: ["rework", "aggregating", "failed", "cancelled"],
+  // 修复代理直接在合并树上改完后，同一轮内已重新验证，回到 verifying
+  rework: ["merging", "verifying", "failed", "cancelled"],
+  aggregating: ["done", "failed", "cancelled"],
+  done: [],
+  failed: [],
+  cancelled: [],
+};
+
+// 单一迁移入口：同状态重复设置按幂等处理；
+// 非法迁移开发环境直接抛错，生产环境只告警并照常迁移，避免线上流程卡死。
+export function transition(task: Task, next: TaskState): void {
+  if (task.state === next) return;
+  const allowed = TASK_TRANSITIONS[task.state];
+  if (!allowed.includes(next)) {
+    const msg = `非法状态迁移：${task.state} → ${next}（task ${short(task.id)}）`;
+    if (process.env.NODE_ENV === "production") console.warn(msg);
+    else throw new Error(msg);
+  }
+  task.state = next;
+}
+
+export function isTaskLive(task: Task): boolean {
+  return LIVE_STATES.has(task.state);
+}
+
+// 状态已终结、但 runTask 还没收尾（取消后等子进程退出）也算活动中，此时不能删除
+export function isTaskActive(task: Task): boolean {
+  return isTaskLive(task) || controllers.has(task.id);
+}
+
+/* ---------------- 规划契约校验 ---------------- */
+
+export type PlannedTask = {
+  name: string;
+  task: string;
+  scope: string[];
+  acceptance: string[];
+  evidence: string[];
+  dependsOn: string[];
+};
+
+// 项目未开 strictNullChecks，字面量判别式联合不会被收窄，这里用扁平结构：
+// 成功/失败都返回同样的字段，调用方只看 ok 与 errors。
+export type PlanResult = {
+  ok: boolean;
+  contract: any | null;
+  tasks: PlannedTask[];
+  errors: string[];
+};
+
+// 提取 JSON 候选：先取 ```json 代码块，再退化为平衡括号扫描。
+// 平衡扫描按字符串状态跳过引号内容，只切出最外层的完整对象/数组，
+// 不会因为前后夹带说明文字或正文里出现花括号而切错。
+function jsonCandidates(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string) => {
+    const t = s.trim();
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  };
+
+  const fence = /```json\s*([\s\S]*?)```/gi;
+  for (let m = fence.exec(text); m; m = fence.exec(text)) push(m[1]);
+  for (const s of balancedJsonSlices(text)) push(s);
+  return out;
+}
+
+function balancedJsonSlices(text: string): string[] {
+  const out: string[] = [];
+  const stack: { ch: string; i: number }[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === "{" || c === "[") {
+      stack.push({ ch: c, i });
+      continue;
+    }
+    if (c === "}" || c === "]") {
+      const top = stack[stack.length - 1];
+      if (!top) continue;
+      const expect = top.ch === "{" ? "}" : "]";
+      if (c !== expect) {
+        // 括号失配：丢掉这一层，继续往后找成对的候选
+        stack.pop();
+        continue;
       }
+      stack.pop();
+      if (!stack.length) out.push(text.slice(top.i, i + 1));
+    }
+  }
+  return out;
+}
+
+function readStringArray(v: any, label: string, errors: string[]): string[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) {
+    errors.push(`${label} 必须是字符串数组`);
+    return [];
+  }
+  const out: string[] = [];
+  for (const item of v) {
+    if (typeof item !== "string") {
+      errors.push(`${label} 必须是字符串数组`);
+      return [];
+    }
+    out.push(item.trim());
+  }
+  return out;
+}
+
+// 拓扑排序检测环，返回环上的任务名（用于错误提示）
+function findCycle(tasks: PlannedTask[]): string | null {
+  const names = tasks.map((t) => t.name).filter(Boolean);
+  const indeg = new Map<string, number>();
+  const edges = new Map<string, string[]>();
+  for (const n of names) {
+    indeg.set(n, 0);
+    edges.set(n, []);
+  }
+  for (const t of tasks) {
+    if (!t.name) continue;
+    for (const d of t.dependsOn) {
+      if (!edges.has(d) || d === t.name) continue;
+      edges.get(d)!.push(t.name);
+      indeg.set(t.name, (indeg.get(t.name) || 0) + 1);
+    }
+  }
+  const queue = [...indeg.entries()].filter(([, n]) => n === 0).map(([n]) => n);
+  let seen = 0;
+  while (queue.length) {
+    const n = queue.shift()!;
+    seen++;
+    for (const m of edges.get(n) || []) {
+      const v = (indeg.get(m) || 0) - 1;
+      indeg.set(m, v);
+      if (!v) queue.push(m);
+    }
+  }
+  if (seen === names.length) return null;
+  return [...indeg.entries()]
+    .filter(([, v]) => v > 0)
+    .map(([n]) => n)
+    .join("、");
+}
+
+// 手写 validator：不做 schema 猜测，不造任务。列表字段缺失按空数组处理，显式写错类型则拒绝。
+export function validatePlan(raw: any, count: number): PlanResult {
+  const errors: string[] = [];
+  let contract: any = null;
+  let list: any[];
+
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (raw && typeof raw === "object" && raw.contract && typeof raw.contract === "object" && !Array.isArray(raw.contract) && Array.isArray(raw.tasks)) {
+    contract = raw.contract;
+    list = raw.tasks;
+  } else {
+    return { ok: false, contract: null, tasks: [], errors: ['顶层必须是 {"contract":{…},"tasks":[…]} 或 tasks 数组'] };
+  }
+
+  if (list.length !== count) errors.push(`tasks 数量为 ${list.length}，与执行代理数 ${count} 不一致`);
+
+  const tasks: PlannedTask[] = [];
+  const names = new Set<string>();
+  list.forEach((x, i) => {
+    const label = `tasks[${i}]`;
+    if (!x || typeof x !== "object" || Array.isArray(x)) {
+      errors.push(`${label} 必须是对象`);
+      return;
+    }
+    const name = String(x.name ?? x.codename ?? "").trim();
+    const body = String(x.task ?? x.description ?? "").trim();
+    if (!name) errors.push(`${label}.name 不能为空`);
+    else if (names.has(name)) errors.push(`${label}.name「${name}」重复`);
+    else names.add(name);
+    if (!body) errors.push(`${label}.task 正文不能为空`);
+    tasks.push({
+      name,
+      task: body,
+      scope: readStringArray(x.scope, `${label}.scope`, errors),
+      acceptance: readStringArray(x.acceptance, `${label}.acceptance`, errors),
+      evidence: readStringArray(x.evidence, `${label}.evidence`, errors),
+      dependsOn: readStringArray(x.depends_on ?? x.dependsOn, `${label}.depends_on`, errors),
     });
-    try {
-      await session.prompt(`${BOSS_CHAT_SYSTEM}\n\n当前任务上下文：\n${bossContext(task)}\n\n用户追问：${clean}`);
-    } finally {
-      if (typeof unsub === "function") unsub();
+  });
+
+  // depends_on 必须指向真实任务、不能自依赖、不能成环
+  const nameSet = new Set(tasks.map((t) => t.name).filter(Boolean));
+  for (const t of tasks) {
+    for (const d of t.dependsOn) {
+      if (!d) continue;
+      if (d === t.name) errors.push(`任务「${t.name}」不能依赖自己`);
+      else if (!nameSet.has(d)) errors.push(`任务「${t.name}」的 depends_on「${d}」不存在`);
     }
-
-    reply.text = (acc || session.getLastAssistantText?.() || "").trim() || "（编排器没有返回内容）";
-    task.boss.summaryUsage = collectPiusage(session);
-  } catch (e: any) {
-    reply.text = `编排器会话失败：${e?.message || e}`;
-    reply.error = true;
   }
-  putTask(task);
-  return reply;
+  const cycle = findCycle(tasks);
+  if (cycle) errors.push(`depends_on 存在循环依赖：${cycle}`);
+
+  return errors.length
+    ? { ok: false, contract: null, tasks, errors }
+    : { ok: true, contract, tasks, errors: [] };
 }
 
-function flatten(v: any): string {
-  if (v == null) return "";
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return v.map(flatten).filter(Boolean).join("\n");
-  if (typeof v === "object") {
-    return Object.entries(v)
-      .filter(([k]) => !["id", "codename", "name", "title", "parallel_group", "depends_on"].includes(k))
-      .map(([k, val]) => `${k}: ${flatten(val)}`)
-      .join("\n");
-  }
-  return String(v);
-}
+export function parsePlan(text: string, count: number): PlanResult {
+  const candidates = jsonCandidates(text);
+  if (!candidates.length) return { ok: false, contract: null, tasks: [], errors: ["输出里没有找到 JSON"] };
 
-function normalizeTask(x: any, i: number): { name: string; task: string; scope: string[]; acceptance: string[]; evidence: string[]; dependsOn: string[] } {
-  const name = String(x.name || x.codename || x.title || CODENAMES[i % CODENAMES.length]).slice(0, 24);
-  const body = x.task || x.description
-    ? flatten(x.task || x.description)
-    : [
-        x.title ? `目标：${x.title}` : "",
-        x.instructions ? `步骤：\n${flatten(x.instructions)}` : "",
-        x.inputs ? `输入：\n${flatten(x.inputs)}` : "",
-        x.acceptance_criteria ? `验收：\n${flatten(x.acceptance_criteria)}` : "",
-      ].filter(Boolean).join("\n\n");
-  return {
-    name,
-    task: body,
-    scope: Array.isArray(x.scope) ? x.scope.map(String) : [],
-    acceptance: Array.isArray(x.acceptance) ? x.acceptance.map(String) : Array.isArray(x.acceptance_criteria) ? x.acceptance_criteria.map(String) : [],
-    evidence: Array.isArray(x.evidence) ? x.evidence.map(String) : [],
-    dependsOn: Array.isArray(x.depends_on) ? x.depends_on.map(String) : Array.isArray(x.dependsOn) ? x.dependsOn.map(String) : [],
-  };
-}
-
-function parsePlan(text: string, goal: string, count: number) {
-  const cleaned = text.replace(/```json/gi, "```").replace(/```/g, "");
-  const candidates: string[] = [];
-  const os = cleaned.indexOf("{");
-  const oe = cleaned.lastIndexOf("}");
-  if (os >= 0 && oe > os) candidates.push(cleaned.slice(os, oe + 1));
-  const as = cleaned.indexOf("[");
-  const ae = cleaned.lastIndexOf("]");
-  if (as >= 0 && ae > as) candidates.push(cleaned.slice(as, ae + 1));
-
+  let firstError: string[] | null = null;
   for (const raw of candidates) {
+    let parsed: any;
     try {
-      const j = JSON.parse(raw);
-      if (j && !Array.isArray(j) && j.contract && Array.isArray(j.tasks) && j.tasks.length) {
-        return { contract: j.contract, tasks: j.tasks.slice(0, count).map(normalizeTask) };
-      }
-      if (Array.isArray(j) && j.length) {
-        return { contract: null, tasks: j.slice(0, count).map(normalizeTask) };
-      }
+      parsed = JSON.parse(raw);
     } catch {
-      /* 试下一个候选 */
+      continue;
     }
+    const res = validatePlan(parsed, count);
+    if (res.ok) return res;
+    if (!firstError) firstError = res.errors;
   }
-
-  return {
-    contract: null,
-    tasks: Array.from({ length: count }, (_, i) => ({
-      name: CODENAMES[i % CODENAMES.length],
-      task: `${goal}\n\n你是第 ${i + 1}/${count} 个执行者。先查看当前目录，只完成与你的编号对应的那部分工作；若无法切分，就独立完成整个目标中最基础的一步，并在结果里说明你做了什么。`,
-      scope: [] as string[],
-      acceptance: [] as string[],
-      evidence: [] as string[],
-      dependsOn: [] as string[],
-    })),
-  };
+  return { ok: false, contract: null, tasks: [], errors: firstError || ["找到 JSON 候选，但都无法解析"] };
 }
 
 function cleanModelText(t: string): string {
@@ -354,63 +560,149 @@ function mergeAll(task: Task): MergeResult[] {
   return results;
 }
 
+// 把一个执行代理的全部依赖合成一个基准提交：先提交每个依赖，
+// 再从第一个依赖分支拉出临时分支 deps-<index>，依次 merge 其余依赖。
+// 这样多依赖的产物都真实可见；任何一步冲突都让该代理直接失败，不再静默只用其中一个依赖。
+function mergeDependencyRefs(
+  task: Task,
+  agent: AgentRun,
+  deps: AgentRun[],
+): { ok: boolean; ref?: string; error?: string } {
+  const base = ensureBaseRepo(task);
+
+  for (const dep of deps) {
+    const c = commitAgent(dep);
+    if (!c.ok) return { ok: false, error: `依赖 ${dep.name} 提交失败：${c.detail}` };
+  }
+
+  const ref = `swarm/${short(task.id)}/deps-${agent.index + 1}`;
+  const dir = join(ROOT, task.id, `deps-${agent.index + 1}`);
+  if (existsSync(dir)) {
+    trySh("git", ["-C", base, "worktree", "remove", "--force", dir]);
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
+  trySh("git", ["-C", base, "branch", "-D", ref]);
+
+  const first = deps[0];
+  // 用依赖的实际分支而不是工作区 HEAD：代理可能自己切过分支，commitAgent 已校正 agent.branch
+  const w = trySh("git", [...GIT, "-C", base, "worktree", "add", "-b", ref, dir, first.branch]);
+  if (!w.ok) {
+    return { ok: false, error: `无法创建依赖合并分支：${(w.out + w.err).trim().slice(0, 200)}` };
+  }
+
+  try {
+    const merged = [first.name];
+    for (const dep of deps.slice(1)) {
+      const m = trySh("git", [...GIT, "-C", dir, "merge", "--no-ff", "--no-edit", dep.branch]);
+      if (!m.ok) {
+        trySh("git", ["-C", dir, "merge", "--abort"]);
+        return {
+          ok: false,
+          error: `依赖合并冲突：${dep.name} 无法并入 ${merged.join("、")}（${(m.out + m.err).trim().slice(0, 200)}）`,
+        };
+      }
+      merged.push(dep.name);
+    }
+    return { ok: true, ref };
+  } finally {
+    // 只保留分支，临时 worktree 用完即摘
+    trySh("git", ["-C", base, "worktree", "remove", "--force", dir]);
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /* ---------------- 验收 ---------------- */
 
-function walkFiles(dir: string, exts: string[], max = 200): string[] {
-  const out: string[] = [];
-  const skip = new Set(["node_modules", ".git", ".next", "data", "dist", "build"]);
-  const walk = (d: string) => {
-    if (out.length >= max) return;
-    let entries: string[] = [];
+// 依赖/构建/缓存目录一律不参与语法检查；.venv/venv/target/vendor/coverage 是各语言常见的重目录
+const SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  "data",
+  "dist",
+  "build",
+  ".venv",
+  "venv",
+  "target",
+  "vendor",
+  "coverage",
+  ".pytest_cache",
+]);
+
+interface SourceBuckets {
+  py: string[];
+  sh: string[];
+  js: string[];
+  html: string[];
+}
+
+// 一次遍历按扩展名分桶：Dirent 自带类型，不再逐层 statSync。
+// 每个桶各自保留 200 文件上限（与改造前每类分别 walk 的结果一致），四桶全满才提前结束。
+async function collectSources(dir: string, maxPerBucket = 200): Promise<SourceBuckets> {
+  const buckets: SourceBuckets = { py: [], sh: [], js: [], html: [] };
+  const full = () =>
+    buckets.py.length >= maxPerBucket &&
+    buckets.sh.length >= maxPerBucket &&
+    buckets.js.length >= maxPerBucket &&
+    buckets.html.length >= maxPerBucket;
+  const walk = async (d: string): Promise<void> => {
+    if (full()) return;
+    let entries;
     try {
-      entries = readdirSync(d);
+      entries = await readdir(d, { withFileTypes: true });
     } catch {
       return;
     }
-    for (const name of entries) {
-      if (skip.has(name)) continue;
-      const p = join(d, name);
-      let st;
-      try {
-        st = statSync(p);
-      } catch {
+    for (const ent of entries) {
+      if (full()) return;
+      const name = ent.name;
+      if (ent.isDirectory()) {
+        if (SKIP_DIRS.has(name)) continue;
+        await walk(join(d, name));
         continue;
       }
-      if (st.isDirectory()) walk(p);
-      else if (exts.some((e) => name.endsWith(e))) out.push(p);
+      if (!ent.isFile()) continue;
+      let bucket: keyof SourceBuckets | null = null;
+      if (name.endsWith(".py")) bucket = "py";
+      else if (name.endsWith(".sh") || name.endsWith(".bash")) bucket = "sh";
+      else if (name.endsWith(".mjs") || name.endsWith(".cjs")) bucket = "js";
+      else if (name.endsWith(".html")) bucket = "html";
+      if (!bucket || buckets[bucket].length >= maxPerBucket) continue;
+      buckets[bucket].push(join(d, name));
     }
   };
-  walk(dir);
-  return out;
+  await walk(dir);
+  return buckets;
 }
 
 function quote(p: string) {
   return `'${p.replace(/'/g, "'\\''")}'`;
 }
 
-function detectChecks(dir: string): { name: string; command: string }[] {
+async function detectChecks(dir: string): Promise<{ name: string; command: string }[]> {
   const checks: { name: string; command: string }[] = [];
 
   const pkg = join(dir, "package.json");
   if (existsSync(pkg)) {
     try {
-      const pj = JSON.parse(readFileSync(pkg, "utf8"));
+      const pj = JSON.parse(await readFile(pkg, "utf8"));
       if (pj?.scripts?.test) checks.push({ name: "npm test", command: "npm test --silent" });
     } catch {
       /* ignore */
     }
   }
 
-  const py = walkFiles(dir, [".py"]).map((p) => relative(dir, p));
+  const sources = await collectSources(dir);
+  const py = sources.py.map((p) => relative(dir, p));
   if (py.length) checks.push({ name: `python 语法 (${py.length} 文件)`, command: `python3 -m py_compile ${py.map(quote).join(" ")}` });
 
-  const shFiles = walkFiles(dir, [".sh", ".bash"]).map((p) => relative(dir, p));
+  const shFiles = sources.sh.map((p) => relative(dir, p));
   if (shFiles.length) checks.push({ name: `shell 语法 (${shFiles.length} 文件)`, command: `bash -n ${shFiles.map(quote).join(" ")}` });
 
-  const js = walkFiles(dir, [".mjs", ".cjs"]).map((p) => relative(dir, p));
+  const js = sources.js.map((p) => relative(dir, p));
   if (js.length) checks.push({ name: `node 语法 (${js.length} 文件)`, command: `node --check ${js.map(quote).join(" ")}` });
 
-  const html = walkFiles(dir, [".html"]).map((p) => relative(dir, p));
+  const html = sources.html.map((p) => relative(dir, p));
   if (html.length) {
     const list = html.map(quote).join(" ");
     checks.push({
@@ -427,37 +719,37 @@ function detectChecks(dir: string): { name: string; command: string }[] {
   return checks;
 }
 
-function runChecks(dir: string, checks: { name: string; command: string }[]): CheckResult[] {
+// 检查串行执行（顺序有语义），单条命令在沙箱里异步跑，超时/取消由 runSandboxedCommand 处理
+async function runChecks(
+  dir: string,
+  checks: { name: string; command: string }[],
+  signal?: AbortSignal,
+): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const c of checks) {
-    const t0 = Date.now();
-    try {
-      const out = execFileSync(/*turbopackIgnore: true*/ "bash", ["-lc", c.command], {
-        cwd: dir,
-        encoding: "utf8",
-        timeout: 120_000,
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 8 * 1024 * 1024,
-      });
-      results.push({ name: c.name, command: c.command, ok: true, exitCode: 0, output: String(out).slice(-4000), ms: Date.now() - t0 });
-    } catch (e: any) {
-      const output = [e?.stdout, e?.stderr].filter(Boolean).map(String).join("\n").slice(-4000) || String(e?.message || e);
-      results.push({ name: c.name, command: c.command, ok: false, exitCode: Number(e?.status ?? 1), output, ms: Date.now() - t0 });
-    }
+    if (signal?.aborted) break;
+    const r = await runSandboxedCommand(c.command, { cwd: dir, signal });
+    // 没有 bwrap 或显式关闭时如实标出隔离退化，避免把宿主机执行误当成沙箱结果
+    const output = r.sandboxed
+      ? r.output
+      : `${r.output}\n[隔离退化] 未启用 bubblewrap 沙箱（SWARM_SANDBOX=off 或找不到 bwrap），命令直接在宿主机执行`.slice(-4000);
+    results.push({ name: c.name, command: c.command, ok: r.ok, exitCode: r.exitCode, output, ms: r.ms });
   }
   return results;
 }
 
 const BANNED_CMD = /(rm\s+-rf\s+\/|sudo\b|mkfs|dd\s+if=|curl[^|]*\|\s*(sh|bash)|wget[^|]*\|\s*(sh|bash))/i;
 
-function verify(task: Task, merge: MergeResult[]): Verification {
+async function verify(task: Task, merge: MergeResult[], signal?: AbortSignal): Promise<Verification> {
   const intDir = join(ROOT, task.id, "integration");
-  const auto = detectChecks(intDir);
+  const auto = await detectChecks(intDir);
   const contractCmds = (Array.isArray(task.boss.contract?.verify) ? task.boss.contract.verify : [])
     .filter((c: any) => typeof c === "string" && c.trim() && !BANNED_CMD.test(c))
     .map((c: string) => ({ name: `契约检查: ${c.slice(0, 70)}`, command: c }));
   const checks = [...auto, ...contractCmds];
-  const results = runChecks(intDir, checks);
+  // 沙箱是第一道防线，BANNED_CMD 只是第二道
+  const results = await runChecks(intDir, checks, signal);
+  throwIfAborted(signal);
 
   // 合并后相对分叉点的真实差异。base 仓库的默认分支不一定是 main（可能是 master），
   // 所以先解析它，再用 merge-base 取分叉提交，避免基分支在任务期间前进带来的噪声。
@@ -488,8 +780,9 @@ function verify(task: Task, merge: MergeResult[]): Verification {
 
 /* ---------------- 流程 ---------------- */
 
-async function plan(task: Task): Promise<void> {
-  task.state = "planning";
+async function plan(task: Task, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  transition(task, "planning");
   task.boss.state = "planning";
   putTask(task);
 
@@ -497,6 +790,8 @@ async function plan(task: Task): Promise<void> {
   mkdirSync(orchDir, { recursive: true });
 
   const session = await makeBossSession(orchDir);
+  // 规划文本按 60ms 合帧发增量；完整 boss 事件在 finally 里作为最终真相
+  const batcher = createDeltaBatcher((delta) => emit({ type: "boss-delta", taskId: task.id, delta }));
   try {
     const prompt = [
       BOSS_PLAN_SYSTEM,
@@ -506,50 +801,74 @@ async function plan(task: Task): Promise<void> {
     let acc = "";
     session.subscribe((ev: any) => {
       if (ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta") {
-        acc += ev.assistantMessageEvent.delta;
+        const delta = ev.assistantMessageEvent.delta as string;
+        acc += delta;
         task.boss.text = acc;
-        emit({ type: "boss", taskId: task.id, boss: task.boss });
+        batcher.push(delta);
       }
     });
-    await session.prompt(prompt);
+    await raceAbort(session.prompt(prompt), signal);
+    throwIfAborted(signal);
+    task.boss.usage = addUsage(task.boss.usage, usageDelta(session));
+
     const text = acc || session.getLastAssistantText?.() || "";
     task.boss.plan = text;
-    task.boss.usage = collectPiusage(session);
 
-    let { contract, tasks } = parsePlan(text, task.goal, task.agents.length);
+    let result = parsePlan(text, task.agents.length);
 
-    // 模型有时会输出工具调用而不是 JSON：纠正一次
-    if (!contract) {
-      await session.prompt(
-        "你上一条输出不是要求的 JSON。你没有工具，不能执行命令或读取文件。请直接输出约定的 JSON 对象，不要输出任何其它内容。",
+    // 规划输出不合法：把具体错误发回模型，要求只输出修正后的 JSON；只重试一次。
+    // 仍不合法就让任务失败，不再编造任务。
+    if (!result.ok) {
+      const errors = result.errors.slice(0, 12).map((e) => `- ${e}`).join("\n");
+      await raceAbort(
+        session.prompt(
+          `你上一条输出不符合规划契约，具体问题：\n${errors}\n\n` +
+            "你没有工具，不能执行命令或读取文件。请只输出修正后的完整 JSON（{\"contract\":…,\"tasks\":[…]} 或 tasks 数组），" +
+            "tasks 数量必须等于执行代理数，name 唯一且非空，depends_on 只能引用存在的 name。不要输出任何其它文字。",
+        ),
+        signal,
       );
-      const retry = (session.getLastAssistantText?.() || "").trim();
+      throwIfAborted(signal);
+      task.boss.usage = addUsage(task.boss.usage, usageDelta(session));
+      const retry = (session.getLastAssistantText?.() || acc || "").trim();
       if (retry) {
         task.boss.plan = `${text}\n\n--- retry ---\n\n${retry}`;
-        const retried = parsePlan(retry, task.goal, task.agents.length);
-        contract = retried.contract;
-        tasks = retried.tasks;
+        result = parsePlan(retry, task.agents.length);
       }
     }
+    if (!result.ok) throw new Error(`规划输出不合法：${result.errors.slice(0, 6).join("；")}`);
 
-    task.boss.contract = contract;
-    task.boss.planList = tasks.map((t) => ({ name: t.name, task: t.task }));
+    task.boss.contract = result.contract;
+    task.boss.planList = result.tasks.map((t) => ({ name: t.name, task: t.task }));
+    // 规划校验保证 tasks 数量与代理数一致，这里按位置一一对应，不再静默复用最后一个任务
     task.agents.forEach((a, i) => {
-      const item = tasks[i] || tasks[tasks.length - 1];
-      a.name = item?.name || CODENAMES[i % CODENAMES.length];
-      a.task = item?.task || task.goal;
-      a.scope = item?.scope || [];
-      a.acceptance = item?.acceptance || [];
-      a.evidence = item?.evidence || [];
-      a.dependsOn = item?.dependsOn || [];
+      const item = result.tasks[i];
+      a.name = item.name;
+      a.task = item.task;
+      a.scope = item.scope;
+      a.acceptance = item.acceptance;
+      a.evidence = item.evidence;
+      a.dependsOn = item.dependsOn;
     });
     task.boss.state = "done";
   } finally {
+    // 先 flush 剩余增量，再发完整 boss；取消/异常也走这里，定时器不会残留
+    batcher.flush();
+    emit({ type: "boss", taskId: task.id, boss: task.boss });
     session.dispose();
   }
 }
 
-async function runAgent(task: Task, agent: AgentRun, opts?: { reason?: string; detail?: string; baseRef?: string }): Promise<void> {
+async function runAgent(task: Task, agent: AgentRun, opts?: { reason?: string; detail?: string; baseRef?: string; signal?: AbortSignal }): Promise<void> {
+  // 取消后不再为排队中的代理创建 worktree
+  if (opts?.signal?.aborted) {
+    agent.state = "cancelled";
+    agent.error = "已取消";
+    agent.startedAt = agent.startedAt || Date.now();
+    agent.endedAt = Date.now();
+    emit({ type: "agent", taskId: task.id, agent });
+    return;
+  }
   agent.state = "booting";
   agent.startedAt = Date.now();
   agent.endedAt = null;
@@ -562,6 +881,14 @@ async function runAgent(task: Task, agent: AgentRun, opts?: { reason?: string; d
   agent.branch = branch;
   agent.state = "working";
   emit({ type: "agent", taskId: task.id, agent });
+
+  if (opts?.signal?.aborted) {
+    agent.state = "cancelled";
+    agent.error = "已取消";
+    agent.endedAt = Date.now();
+    emit({ type: "agent", taskId: task.id, agent });
+    return;
+  }
 
   const env: Record<string, string> = {
     AGENT_ID: agent.id,
@@ -579,28 +906,41 @@ async function runAgent(task: Task, agent: AgentRun, opts?: { reason?: string; d
   ];
   if (opts?.reason) parts.push(REWORK_AGENT_TASK(opts.reason, opts.detail || ""));
 
-  const res = await runAgyTask({
-    prompt: parts.join("\n\n"),
-    cwd: dir,
-    agentId: agent.id,
-    env,
-    timeoutMs: Number(process.env.SWARM_AGENT_TIMEOUT_MS || 600_000),
-    onText: (_d, full) => {
-      agent.text = full;
-      emit({ type: "agent", taskId: task.id, agent });
-    },
-  });
+  // 文本增量按 60ms 合帧；状态变化仍发完整 agent（booting/working/done/...）
+  const batcher = createDeltaBatcher((delta) => emit({ type: "agent-delta", taskId: task.id, agentId: agent.id, delta }));
+
+  const res = await (async () => {
+    try {
+      return await runAgyTask({
+        prompt: parts.join("\n\n"),
+        cwd: dir,
+        agentId: agent.id,
+        env,
+        timeoutMs: Number(process.env.SWARM_AGENT_TIMEOUT_MS || 600_000),
+        signal: opts?.signal,
+        onText: (delta, full) => {
+          agent.text = full;
+          batcher.push(delta);
+        },
+      });
+    } finally {
+      // 取消/异常也先 flush，剩余文本不会丢，定时器也不会残留
+      batcher.flush();
+    }
+  })();
 
   agent.usage = res.usage;
   agent.spent = (agent.spent || 0) + (res.usage?.totalTokens || 0);
   agent.endedAt = Date.now();
-  agent.state = res.error ? "failed" : "done";
-  agent.error = res.error || null;
+  const cancelled = res.error === "已取消" || !!opts?.signal?.aborted;
+  agent.state = cancelled ? "cancelled" : res.error ? "failed" : "done";
+  agent.error = cancelled ? "已取消" : res.error || null;
   agent.changedFiles = changedFiles(dir);
   emit({ type: "agent", taskId: task.id, agent });
 }
 
-async function runVerifier(task: Task, verification: Verification): Promise<void> {
+async function runVerifier(task: Task, verification: Verification, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
   const intDir = join(ROOT, task.id, "integration");
   const checks = verification.checks
     .map((c) => `- [${c.ok ? "PASS" : "FAIL"}] ${c.name}: ${(c.output || "").slice(0, 200).replace(/\s+/g, " ")}`)
@@ -613,11 +953,18 @@ async function runVerifier(task: Task, verification: Verification): Promise<void
     cwd: intDir,
     agentId: "verifier",
     timeoutMs: Number(process.env.SWARM_VERIFIER_TIMEOUT_MS || 600_000),
+    signal,
     onText: (_d, full) => {
       if (task.verifier) task.verifier.text = full;
       emit({ type: "task", task: task });
     },
   });
+
+  if (res.error === "已取消" || signal?.aborted) {
+    task.verifier = { state: "failed", text: res.text, usage: res.usage, error: "已取消" };
+    putTask(task);
+    throw new TaskCancelled();
+  }
 
   task.verifier = {
     state: res.error ? "failed" : "done",
@@ -668,11 +1015,12 @@ function problemsText(ps: Problem[]): string {
 // 返工只做一件事：把失败证据交回给它真正能改的那一层。
 // 执行代理级问题（未跑完 / 分支冲突）→ 基于当前 integration 提交重做；
 // 只有自动检查失败（多份改动叠加后才暴露）→ 修复代理直接在合并树上修。
-async function reworkOnce(task: Task, round: number): Promise<"none" | "progress" | "stalled"> {
+async function reworkOnce(task: Task, round: number, signal?: AbortSignal): Promise<"none" | "progress" | "stalled"> {
+  throwIfAborted(signal);
   const problems = collectProblems(task);
   if (!problems.length) return "none";
 
-  task.state = "rework";
+  transition(task, "rework");
   putTask(task);
 
   const agentProblems = problems.filter((p) => p.kind === "failed" || p.kind === "conflict");
@@ -682,10 +1030,11 @@ async function reworkOnce(task: Task, round: number): Promise<"none" | "progress
     const detail = problemsText(agentProblems);
     const seen = new Set<string>();
     for (const p of agentProblems) {
+      throwIfAborted(signal);
       const agent = p.agent;
       if (!agent || seen.has(agent.id)) continue;
       seen.add(agent.id);
-      await runAgent(task, agent, { reason: p.reason, detail, baseRef });
+      await runAgent(task, agent, { reason: p.reason, detail, baseRef, signal });
       task.rework.push({
         round,
         target: "agent",
@@ -699,12 +1048,14 @@ async function reworkOnce(task: Task, round: number): Promise<"none" | "progress
       putTask(task);
     }
 
-    task.state = "merging";
+    throwIfAborted(signal);
+    transition(task, "merging");
     putTask(task);
     task.merge = mergeAll(task);
-    task.state = "verifying";
+    throwIfAborted(signal);
+    transition(task, "verifying");
     putTask(task);
-    task.verification = verify(task, task.merge);
+    task.verification = await verify(task, task.merge, signal);
     putTask(task);
     return "progress";
   }
@@ -730,11 +1081,19 @@ async function reworkOnce(task: Task, round: number): Promise<"none" | "progress
     cwd: intDir,
     agentId: "fixer",
     timeoutMs: Number(process.env.SWARM_FIXER_TIMEOUT_MS || 600_000),
+    signal,
     onText: (_d, full) => {
       entry.text = full;
       emit({ type: "task", task });
     },
   });
+
+  if (res.error === "已取消" || signal?.aborted) {
+    entry.text = res.text || entry.text;
+    entry.reason += "（已取消）";
+    putTask(task);
+    throw new TaskCancelled();
+  }
 
   trySh("git", ["-C", intDir, "add", "-A", "--", ".", ...JUNK]);
   const c = trySh("git", [...GIT, "-C", intDir, "commit", "-qm", `fixer #${round}: 修复合并后的自动检查失败`], intDir);
@@ -746,13 +1105,18 @@ async function reworkOnce(task: Task, round: number): Promise<"none" | "progress
   if (res.error) entry.reason += `（修复代理报错：${res.error}）`;
   putTask(task);
 
-  task.verification = verify(task, task.merge);
+  task.verification = await verify(task, task.merge, signal);
+  throwIfAborted(signal);
   putTask(task);
+  // 修复代理直接在合并树上改完并已重新验证，本轮回到 verifying
+  transition(task, "verifying");
   // 修复代理未修改任何文件时，再开一轮没有意义，直接交给裁决
   return before !== after ? "progress" : "stalled";
 }
 
-async function judge(task: Task, verification: Verification, merge: MergeResult[]): Promise<void> {  const orchDir = join(ROOT, task.id, "orchestrator");
+async function judge(task: Task, verification: Verification, merge: MergeResult[], signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  const orchDir = join(ROOT, task.id, "orchestrator");
   const session = await makeBossSession(orchDir);
   try {
     const audit = [
@@ -786,7 +1150,9 @@ async function judge(task: Task, verification: Verification, merge: MergeResult[
         acc += ev.assistantMessageEvent.delta;
       }
     });
-    await session.prompt(prompt);
+    await raceAbort(session.prompt(prompt), signal);
+    throwIfAborted(signal);
+    task.boss.summaryUsage = addUsage(task.boss.summaryUsage, usageDelta(session));
     const raw = (acc || session.getLastAssistantText?.() || "").trim();
     const cleaned = raw
       .replace(/<[\s\S]*?>/g, " ")
@@ -797,20 +1163,28 @@ async function judge(task: Task, verification: Verification, merge: MergeResult[
 
     let modelPass: boolean | null = null;
     let reasons: string[] = [];
-    const js = cleaned.indexOf("{");
-    const je = cleaned.lastIndexOf("}");
-    if (js >= 0 && je > js) {
-      try {
-        const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-        modelPass = !!j.pass;
-        reasons = Array.isArray(j.reasons) ? j.reasons.map(String).slice(0, 3) : [];
-      } catch {
-        /* 落到关键词 */
+
+    // 以 BOSS_JUDGE_TASK 约定的单行协议为准：先认 PASS:/FAIL:（允许中文「通过/不通过」与全角冒号）
+    const line = /^\s*(PASS|FAIL|通过|不通过|未通过)\s*[:：]?\s*(.*)$/i.exec(cleaned);
+    if (line) {
+      const v = line[1];
+      modelPass = /^PASS$/i.test(v) || v === "通过";
+      const reason = line[2].replace(/^[-—:：\s]+/, "").trim();
+      if (reason) reasons = [reason];
+    } else {
+      // 兼容旧模型输出：单行协议解析不到时再看 JSON
+      for (const rawJson of jsonCandidates(raw)) {
+        try {
+          const j = JSON.parse(rawJson);
+          if (j && typeof j === "object" && !Array.isArray(j) && "pass" in j) {
+            modelPass = !!j.pass;
+            reasons = Array.isArray(j.reasons) ? j.reasons.map(String).slice(0, 3) : [];
+            break;
+          }
+        } catch {
+          /* 试下一个候选 */
+        }
       }
-    }
-    if (modelPass === null) {
-      if (/^\s*(PASS|通过)/i.test(cleaned)) modelPass = true;
-      else if (/^\s*(FAIL|不通过|未通过)/i.test(cleaned)) modelPass = false;
     }
 
     // 硬证据优先：自动检查与合并结果决定通过与否，模型只能否决不能被采信为通过
@@ -827,9 +1201,9 @@ async function judge(task: Task, verification: Verification, merge: MergeResult[
       ];
     }
     task.verdict = { pass, reasons, raw: (cleaned || raw).slice(0, 2000) };
-    task.boss.summaryUsage = collectPiusage(session);
     task.boss.state = "done";
   } catch (e: any) {
+    if (isCancelled(e, signal)) throw e;
     task.verdict = { pass: false, reasons: [`判定失败：${e?.message || e}`], raw: "" };
     task.boss.state = "failed";
   } finally {
@@ -838,8 +1212,9 @@ async function judge(task: Task, verification: Verification, merge: MergeResult[
   }
 }
 
-async function aggregate(task: Task): Promise<void> {
-  task.state = "aggregating";
+async function aggregate(task: Task, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  transition(task, "aggregating");
   putTask(task);
   const orchDir = join(ROOT, task.id, "orchestrator");
   const session = await makeBossSession(orchDir);
@@ -862,10 +1237,13 @@ async function aggregate(task: Task): Promise<void> {
         acc += ev.assistantMessageEvent.delta;
       }
     });
-    await session.prompt(prompt);
+    await raceAbort(session.prompt(prompt), signal);
+    throwIfAborted(signal);
+    task.boss.summaryUsage = addUsage(task.boss.summaryUsage, usageDelta(session));
     task.summary = cleanModelText(acc || session.getLastAssistantText?.() || "");
     task.boss.state = "done";
   } catch (e: any) {
+    if (isCancelled(e, signal)) throw e;
     task.summary = `汇总失败：${e?.message || e}`;
     task.boss.state = "failed";
   } finally {
@@ -874,80 +1252,107 @@ async function aggregate(task: Task): Promise<void> {
   }
 }
 
-async function runTask(task: Task) {
+async function runTask(task: Task, signal?: AbortSignal) {
   try {
+    throwIfAborted(signal);
     ensureBaseRepo(task);
-    await plan(task);
-    task.state = "running";
+    throwIfAborted(signal);
+    await plan(task, signal);
+    throwIfAborted(signal);
+    transition(task, "running");
     putTask(task);
 
     // 按 dependsOn 分批推进：无依赖的先跑，依赖满足后再跑下一批
     const doneNames = new Set<string>();
     let remaining = [...task.agents];
     while (remaining.length) {
+      throwIfAborted(signal);
       let ready = remaining.filter((a) => (a.dependsOn || []).every((d) => doneNames.has(d)));
       if (!ready.length) ready = remaining; // 循环依赖兜底：剩下的全部放行
       await Promise.all(
-        ready.map((a) => {
-          // 有依赖的执行代理从依赖方的提交出发，确保能看到上游已提交的产物
-          const deps = (a.dependsOn || [])
+        ready.map(async (a) => {
+          // 有依赖的执行代理从「全部依赖合并后的提交」出发，确保多依赖的产物都可见；
+          // 依赖合并冲突时该代理直接失败，不再静默只取其中一个依赖。
+          const deps = [...new Set(a.dependsOn || [])]
             .map((n) => task.agents.find((x) => x.name === n && x.state === "done" && x.branch))
             .filter(Boolean) as AgentRun[];
           let baseRef: string | undefined;
           if (deps.length) {
-            const dep = deps[deps.length - 1];
-            commitAgent(dep);
-            const r = trySh("git", ["-C", dep.worktree, "rev-parse", "HEAD"]);
-            if (r.ok && r.out.trim()) baseRef = r.out.trim();
+            const merged = mergeDependencyRefs(task, a, deps);
+            if (!merged.ok) {
+              a.state = "failed";
+              a.error = merged.error;
+              a.startedAt = a.startedAt || Date.now();
+              a.endedAt = Date.now();
+              emit({ type: "agent", taskId: task.id, agent: a });
+              return;
+            }
+            baseRef = merged.ref;
           }
-          return runAgent(task, a, baseRef ? { baseRef } : undefined);
+          return runAgent(task, a, { baseRef, signal });
         }),
       );
+      // 取消后不再进入下一批，也不再把状态写回 running
+      throwIfAborted(signal);
       for (const a of ready) doneNames.add(a.name);
       recount(task);
       putTask(task);
       remaining = remaining.filter((a) => !ready.includes(a));
     }
 
-    task.state = "merging";
+    throwIfAborted(signal);
+    transition(task, "merging");
     putTask(task);
     task.merge = mergeAll(task);
+    throwIfAborted(signal);
     putTask(task);
 
-    task.state = "verifying";
+    transition(task, "verifying");
     putTask(task);
-    task.verification = verify(task, task.merge);
+    task.verification = await verify(task, task.merge, signal);
+    throwIfAborted(signal);
     putTask(task);
 
     // 自动检查失败 → 返工，最多 N 轮；每轮只处理一类问题，改完重新合并并/重跑验收
     const maxRounds = Math.max(0, Number(process.env.SWARM_REWORK_ROUNDS ?? 2));
     for (let round = 1; round <= maxRounds; round++) {
-      const acted = await reworkOnce(task, round);
+      throwIfAborted(signal);
+      const acted = await reworkOnce(task, round, signal);
       if (acted === "none" || acted === "stalled") break;
       recount(task);
       putTask(task);
     }
 
-    task.state = "verifying";
+    transition(task, "verifying");
     putTask(task);
-    await runVerifier(task, task.verification);
+    await runVerifier(task, task.verification, signal);
 
-    await aggregate(task);
-    await judge(task, task.verification, task.merge);
+    await aggregate(task, signal);
+    await judge(task, task.verification, task.merge, signal);
 
-    task.state = "done";
+    transition(task, "done");
   } catch (e: any) {
-    task.state = "failed";
-    task.error = e?.message || String(e);
-    task.boss.state = "failed";
+    if (isCancelled(e, signal) || task.state === "cancelled") {
+      // 取消由 cancelTask 统一落状态与系统消息，这里只保证不再被改成 failed
+      transition(task, "cancelled");
+      task.error = task.error || "已取消";
+    } else {
+      transition(task, "failed");
+      task.error = e?.message || String(e);
+      task.boss.state = "failed";
+      noteSystem(task.id, `任务 ${task.id.slice(0, 8)} 执行失败：${task.error}`, "error");
+    }
   } finally {
-    task.finishedAt = Date.now();
-    recount(task);
-    putTask(task);
+    // 任务可能在取消后已被删除：不要再把旧快照写回
+    if (!deletedTasks.has(task.id)) {
+      task.finishedAt = task.finishedAt || Date.now();
+      recount(task);
+      putTask(task);
+    }
   }
 }
 
-function recount(task: Task) {
+export function recount(task: Task) {
   const boss = (task.boss.usage?.totalTokens || 0) + (task.boss.summaryUsage?.totalTokens || 0);
   const agents = task.agents.reduce((n, a) => n + (a.spent || a.usage?.totalTokens || 0), 0);
   const verifier = task.verifier?.usage?.totalTokens || 0;
@@ -996,26 +1401,73 @@ export function createTask(input: { goal: string; agents?: number; repoPath?: st
     rework: [],
     promote: null,
     error: null,
-    messages: [{ id: randomUUID(), role: "user", text: input.goal, at: Date.now(), kind: "goal" }],
   };
+  const controller = new AbortController();
+  controllers.set(task.id, controller);
   putTask(task);
-  void runTask(task);
+  // 推迟到微任务，让会话来得及先把 taskId 绑上（失败时的系统消息才不会丢）
+  queueMicrotask(() => {
+    void runTask(task, controller.signal).finally(() => {
+      controllers.delete(task.id);
+    });
+  });
   return task;
 }
 
-export function cleanupTask(id: string) {
+// 任务级取消：中断运行中的 agy、把未结束的代理标为 cancelled，并落一条会话系统消息
+export function cancelTask(id: string): Task | undefined {
+  const task = getTask(id);
+  if (!task) return undefined;
+  if (!isTaskLive(task)) return task;
+
+  controllers.get(id)?.abort();
+
+  const now = Date.now();
+  transition(task, "cancelled");
+  task.error = "已取消";
+  task.finishedAt = task.finishedAt || now;
+  for (const a of task.agents) {
+    if (a.state === "queued" || a.state === "booting" || a.state === "working") {
+      a.state = "cancelled";
+      a.error = "已取消";
+      a.endedAt = a.endedAt || now;
+    }
+  }
+  if (task.verifier && task.verifier.state === "working") task.verifier.state = "failed";
+  putTask(task);
+  noteSystem(id, `任务 ${id.slice(0, 8)} 已取消`, "event");
+  return task;
+}
+
+// 删除任务及其运行目录：先摘 worktree，再删 runs/<id>，最后删任务快照
+export function cleanupTask(id: string): boolean {
   const task = getTask(id);
   if (!task) return false;
-  for (const a of task.agents) {
-    if (a.worktree && existsSync(a.worktree)) {
+  deletedTasks.add(id);
+
+  const worktrees = [...task.agents.map((a) => a.worktree), join(ROOT, id, "integration")].filter(
+    (p): p is string => !!p && existsSync(p),
+  );
+  for (const wt of worktrees) {
+    if (task.baseRepo) trySh("git", ["-C", task.baseRepo, "worktree", "remove", "--force", wt]);
+    if (existsSync(wt)) {
       try {
-        if (task.baseRepo) sh("git", ["-C", task.baseRepo, "worktree", "remove", "--force", a.worktree]);
-        else rmSync(a.worktree, { recursive: true, force: true });
+        rmSync(wt, { recursive: true, force: true });
       } catch {
-        /* ignore */
+        /* 已被 git 清掉 */
       }
     }
   }
+  // 基础仓库可能就在 runs/<id> 下（临时仓库），整目录删掉即可，不会碰到用户自己的仓库
+  try {
+    rmSync(join(ROOT, id), { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+
+  controllers.delete(id);
+  removeTask(id);
+  emit({ type: "task-deleted", taskId: id });
   return true;
 }
 

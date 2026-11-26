@@ -18,6 +18,7 @@ const nextConfig: NextConfig = {
       "./dist/**",
       "./docs/**",
       "./tools/**",
+      "./tests/**",
       "./deploy/**",
       "./*.md",
       "./install.sh",

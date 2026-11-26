@@ -9,6 +9,8 @@ export interface AgyTaskOptions {
   extraArgs?: string[];
   env?: Record<string, string>;
   timeoutMs?: number;
+  // 任务级取消：中止后先 SIGTERM，2 秒仍未退出则 SIGKILL
+  signal?: AbortSignal;
   onText?: (delta: string, full: string) => void;
   onUpdate?: (update: any) => void;
 }
@@ -35,13 +37,12 @@ const RW_HOME = [
   ".local/state",
 ];
 
-/* bubblewrap 沙箱：根文件系统只读，只有 worktree 与 agy 自己的状态目录可写。
-   网络保持共享（模型 API 需要），PID/IPC/UTS 隔离。 */
-function spawnSpec(cwd: string, extraArgs: string[]) {
-  const agyArgs = ["acp", "--dangerously-skip-permissions", ...extraArgs];
-  if (SANDBOX_MODE === "off" || !existsSync(/*turbopackIgnore: true*/ BWRAP_BIN)) {
-    return { cmd: AGY_BIN, args: agyArgs };
-  }
+/* bubblewrap 沙箱参数：根文件系统只读，只有 worktree 与 agy 自己的状态目录可写。
+   网络保持共享（模型 API 需要），PID/IPC/UTS 隔离。
+   返回的数组已经包含隔离开关，调用方在后面接上要执行的命令即可。
+   返回 null 表示应直接执行（SWARM_SANDBOX=off / 找不到 bwrap / 路径不可解析）。 */
+export function sandboxBinds(cwd: string): string[] | null {
+  if (SANDBOX_MODE === "off" || !existsSync(/*turbopackIgnore: true*/ BWRAP_BIN)) return null;
   try {
     const real = realpathSync(/*turbopackIgnore: true*/ cwd);
     const args = [
@@ -62,6 +63,7 @@ function spawnSpec(cwd: string, extraArgs: string[]) {
     const uid = typeof process.getuid === "function" ? process.getuid() : null;
     const runUser = uid === null ? null : `/run/user/${uid}`;
     if (runUser && existsSync(/*turbopackIgnore: true*/ runUser)) args.push("--bind", runUser, runUser);
+    // 工作区是唯一可写的项目路径（与 agy 一致）
     args.push("--bind", real, real);
     const binds = new Set<string>();
     for (const rel of RW_HOME) {
@@ -75,13 +77,186 @@ function spawnSpec(cwd: string, extraArgs: string[]) {
       "--unshare-ipc",
       "--unshare-uts",
       "--share-net",
-      AGY_BIN,
-      ...agyArgs,
     );
-    return { cmd: BWRAP_BIN, args };
+    return args;
   } catch {
-    return { cmd: AGY_BIN, args: agyArgs };
+    return null;
   }
+}
+
+function spawnSpec(cwd: string, extraArgs: string[]) {
+  const agyArgs = ["acp", "--dangerously-skip-permissions", ...extraArgs];
+  const sandbox = sandboxBinds(cwd);
+  if (!sandbox) return { cmd: AGY_BIN, args: agyArgs };
+  return { cmd: BWRAP_BIN, args: [...sandbox, AGY_BIN, ...agyArgs] };
+}
+
+/* ---------------- 沙箱内执行任意命令（自动检查 / 契约 verify） ---------------- */
+
+export interface SandboxRunOptions {
+  cwd: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface SandboxRunResult {
+  ok: boolean;
+  exitCode: number;
+  output: string;
+  ms: number;
+  // false 表示没有沙箱、命令直接在宿主机执行（隔离退化）
+  sandboxed: boolean;
+  timedOut: boolean;
+  aborted: boolean;
+}
+
+const OUTPUT_KEEP = 4000;
+// 收集阶段的滚动上限，避免长输出把内存吃满；最终只保留最后 OUTPUT_KEEP 字符
+const OUTPUT_BUFFER_MAX = 64 * 1024;
+
+function keepTail(s: string, max: number) {
+  return s.length > max ? s.slice(-max) : s;
+}
+
+/* 异步执行一条 shell 命令，供自动检查与契约 verify 使用。
+   有沙箱时：bwrap 参数 + bash -lc <command>；无沙箱时直接 bash -lc <command>。
+   spawn 用 detached 单独建进程组，超时/取消时 kill(-pid) 连带清掉 npm/node 子进程。 */
+export function runSandboxedCommand(command: string, opts: SandboxRunOptions): Promise<SandboxRunResult> {
+  const { cwd, signal, timeoutMs = 120_000 } = opts;
+  const t0 = Date.now();
+  const sandbox = sandboxBinds(cwd);
+  const sandboxed = sandbox !== null;
+
+  // 已取消的任务不再起进程
+  if (signal?.aborted) {
+    return Promise.resolve({
+      ok: false,
+      exitCode: -1,
+      output: "已取消：命令未执行",
+      ms: 0,
+      sandboxed,
+      timedOut: false,
+      aborted: true,
+    });
+  }
+
+  const cmd = sandbox ? BWRAP_BIN : "bash";
+  const args = sandbox ? [...sandbox, "bash", "-lc", command] : ["-lc", command];
+
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(/*turbopackIgnore: true*/ cmd, args, {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+        env: { ...process.env, LANG: "C.UTF-8" },
+      });
+    } catch (e: any) {
+      resolve({
+        ok: false,
+        exitCode: -1,
+        output: keepTail(String(e?.message || e), OUTPUT_KEEP),
+        ms: Date.now() - t0,
+        sandboxed,
+        timedOut: false,
+        aborted: false,
+      });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let exitCode: number | null = null;
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      clearTimeout(hardTimer);
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    // 杀掉整个进程组；取不到组时退回只杀直接子进程
+    const killGroup = (sig: NodeJS.Signals) => {
+      if (child.pid == null) return;
+      try {
+        process.kill(-child.pid, sig);
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {
+          /* 已退出 */
+        }
+      }
+    };
+
+    // SIGKILL 之后 close 通常立刻到；万一管道被孙进程占住，2 秒后强制收尾
+    const killAndWait = () => {
+      killGroup("SIGKILL");
+      if (!killTimer) {
+        killTimer = setTimeout(() => finish(), 2000);
+      }
+    };
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const reasons: string[] = [];
+      if (timedOut) reasons.push(`超时：超过 ${timeoutMs}ms，已终止整个进程组`);
+      if (aborted) reasons.push("已取消：任务已中止，已终止整个进程组");
+      const body = [stdout, stderr].filter(Boolean).join("\n").trim();
+      // 原因放在末尾：截断保留最后 4000 字符时不会把超时/取消说明丢掉
+      const output = keepTail([body, ...reasons].filter(Boolean).join("\n"), OUTPUT_KEEP) || "(无输出)";
+      resolve({
+        ok: !timedOut && !aborted && exitCode === 0,
+        exitCode: timedOut ? 124 : aborted ? -1 : exitCode ?? -1,
+        output,
+        ms: Date.now() - t0,
+        sandboxed,
+        timedOut,
+        aborted,
+      });
+    };
+
+    const onAbort = () => {
+      if (settled) return;
+      aborted = true;
+      killAndWait();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    const hardTimer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      killAndWait();
+    }, timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout = keepTail(stdout + chunk, OUTPUT_BUFFER_MAX);
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderr = keepTail(stderr + chunk, OUTPUT_BUFFER_MAX);
+    });
+
+    child.on("error", (e) => {
+      stderr = keepTail(`${stderr}\n${String(e)}`, OUTPUT_BUFFER_MAX);
+      finish();
+    });
+    // 用 close 而不是 exit：确保 stdout/stderr 已经读完
+    child.on("close", (code) => {
+      exitCode = code;
+      finish();
+    });
+  });
 }
 
 export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
@@ -92,9 +267,15 @@ export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
     extraArgs = [],
     env = {},
     timeoutMs = 600_000,
+    signal,
     onText,
     onUpdate,
   } = opts;
+
+  // 已经取消的任务不再先起进程
+  if (signal?.aborted) {
+    return Promise.resolve({ text: "", usage: null, stopReason: null, elapsedMs: 0, error: "已取消" });
+  }
 
   return new Promise((resolve) => {
     const spec = spawnSpec(cwd, extraArgs);
@@ -111,14 +292,43 @@ export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
     let stopReason: string | null = null;
     const t0 = Date.now();
     let settled = false;
+    let exited = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+    };
 
     const finish = (error?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer);
       child.kill("SIGTERM");
+      // 取消时进程可能对 SIGTERM 无响应，2 秒后补一刀（bwrap 自带 --die-with-parent，这里仍主动收）
+      if (error === "已取消" && !exited) {
+        killTimer = setTimeout(() => {
+          killTimer = null;
+          if (!exited) {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              /* 已退出 */
+            }
+          }
+        }, 2000);
+        killTimer.unref?.();
+      } else {
+        cleanup();
+      }
       resolve({ text, usage, stopReason, elapsedMs: Date.now() - t0, error });
     };
+
+    const onAbort = () => finish("已取消");
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
     const hardTimer = setTimeout(() => finish(`timeout after ${timeoutMs}ms`), timeoutMs);
 
@@ -187,7 +397,9 @@ export function runAgyTask(opts: AgyTaskOptions): Promise<AgyTaskResult> {
     child.stderr.on("data", () => {});
     child.on("error", (e) => finish(String(e)));
     child.on("exit", (code) => {
+      exited = true;
       if (!settled) finish(`agy exited early (code=${code})`);
+      else cleanup();
     });
 
     (async () => {

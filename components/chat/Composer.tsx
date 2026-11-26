@@ -19,6 +19,8 @@ export function Composer({
   canRun = false,
   runBusy = false,
   onRun,
+  running = false,
+  onStop,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -35,6 +37,8 @@ export function Composer({
   canRun?: boolean;
   runBusy?: boolean;
   onRun?: () => void;
+  running?: boolean;
+  onStop?: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -59,6 +63,8 @@ export function Composer({
             value={repoPath}
             onChange={(e) => setRepoPath(e.target.value)}
             placeholder="目标仓库路径（可选，留空则新建临时仓库）"
+            aria-label="目标仓库路径"
+            title="目标仓库路径（可选）"
             spellCheck={false}
           />
         )}
@@ -82,9 +88,26 @@ export function Composer({
             {hint || (isNew ? "契约与检查命令由编排器生成" : "Shift + Enter 换行")}
           </span>
           {canRun && (
-            <button className="compose-run" onClick={onRun} disabled={runBusy || busy}>
+            <button
+              className="compose-run"
+              onClick={onRun}
+              disabled={runBusy || busy}
+              aria-label="开始执行（会先确认目标与代理数量）"
+              title="开始执行"
+            >
               {runBusy ? <Spinner size={13} /> : null}
               开始执行
+            </button>
+          )}
+          {running && onStop && (
+            <button
+              className="compose-stop"
+              onClick={onStop}
+              aria-label="停止执行"
+              title="停止执行"
+            >
+              <Icon name="stop" size={12} />
+              停止
             </button>
           )}
           {(isNew || canRun) && (
@@ -93,6 +116,7 @@ export function Composer({
               value={agents}
               onChange={(e) => setAgents(Number(e.target.value))}
               title="执行代理数量"
+              aria-label="执行代理数量"
             >
               {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
                 <option key={n} value={n}>
@@ -105,10 +129,10 @@ export function Composer({
             className="compose-send"
             onClick={send}
             disabled={busy || disabled || !value.trim()}
-            aria-label={isNew ? "提交任务" : "发送"}
-            title={isNew ? "提交任务" : "发送"}
+            aria-label="发送消息"
+            title="发送消息"
           >
-            {busy ? <Spinner size={15} /> : <Icon name={isNew ? "chevron" : "check"} size={16} />}
+            {busy ? <Spinner size={15} /> : <Icon name="send" size={15} />}
           </button>
         </div>
       </div>

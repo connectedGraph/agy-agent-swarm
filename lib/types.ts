@@ -1,5 +1,5 @@
-export type AgentState = "queued" | "booting" | "working" | "done" | "failed";
-export type TaskState = "planning" | "running" | "merging" | "verifying" | "rework" | "aggregating" | "done" | "failed";
+export type AgentState = "queued" | "booting" | "working" | "done" | "failed" | "cancelled";
+export type TaskState = "planning" | "running" | "merging" | "verifying" | "rework" | "aggregating" | "done" | "failed" | "cancelled";
 
 export interface Usage {
   inputTokens?: number;
@@ -102,13 +102,13 @@ export interface PromoteResult {
   commit?: string;
 }
 
-// 会话记录：目标是第一条 user 消息；之后是编排器回复与追问
+// 会话记录：所有对话（目标、编排器回复、系统事件）都挂在会话上
 export interface ChatMessage {
   id: string;
-  role: "user" | "boss";
+  role: "user" | "boss" | "system";
   text: string;
   at: number;
-  kind?: "goal" | "reply";
+  kind?: "goal" | "reply" | "error" | "event";
   error?: boolean;
 }
 
@@ -120,6 +120,8 @@ export interface Chat {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  // 会话可以执行多次，taskIds 保留全部历史；taskId 只表示最近一次，兼容旧数据
+  taskIds: string[];
   taskId: string | null;
 }
 
@@ -143,16 +145,19 @@ export interface Task {
   rework: ReworkRound[];
   promote: PromoteResult | null;
   error: string | null;
-  // 编排器会话：用户的目标与追问、编排器的回复
-  messages?: ChatMessage[];
 }
 
 export type SwarmEvent =
   | { type: "task"; task: Task }
   | { type: "agent"; taskId: string; agent: AgentRun }
   | { type: "boss"; taskId: string; boss: BossRun }
-  | { type: "chat"; taskId: string; message: ChatMessage }
   | { type: "session"; chat: Chat }
+  // 文本增量：只带真正新增的一段，前端拼接；完整对象事件仍是最终真相
+  | { type: "agent-delta"; taskId: string; agentId: string; delta: string }
+  | { type: "session-delta"; chatId: string; messageId: string; delta: string }
+  | { type: "boss-delta"; taskId: string; delta: string }
+  | { type: "session-deleted"; chatId: string }
+  | { type: "task-deleted"; taskId: string }
   | { type: "log"; taskId: string; agentId?: string; text: string; at: number }
   | { type: "record"; enabled: boolean }
   | { type: "gateway"; stats: GatewayStats };
