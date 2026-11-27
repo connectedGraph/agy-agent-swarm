@@ -56,7 +56,19 @@ if [ "$MODE" = "--service" ]; then
   echo "==> 安装并启用 systemd user 单元"
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
-  cp deploy/agy-agent-swarm.service "$UNIT_DIR/agy-agent-swarm.service"
+  # 仓库里的单元是模板：把路径、node 位置按当前机器填进去再安装，
+  # 不把某个人的 /home 路径写死在库里
+  APP_ROOT="$(pwd)"
+  NODE_BIN="$(command -v node)"
+  NODE_DIR="$(dirname "$NODE_BIN")"
+  # sed 的替换串里 & | \ 有特殊含义，路径偶尔会带这些字符
+  esc() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
+  UNIT="$UNIT_DIR/agy-agent-swarm.service"
+  sed -e "s|@APP_ROOT@|$(esc "$APP_ROOT")|g" \
+      -e "s|@NODE_BIN@|$(esc "$NODE_BIN")|g" \
+      -e "s|@NODE_DIR@|$(esc "$NODE_DIR")|g" \
+      deploy/agy-agent-swarm.service > "$UNIT"
+  chmod 644 "$UNIT"
   systemctl --user daemon-reload
   systemctl --user enable agy-agent-swarm.service
   systemctl --user restart agy-agent-swarm.service
@@ -65,6 +77,7 @@ if [ "$MODE" = "--service" ]; then
   echo
   echo "完成。控制台: http://127.0.0.1:3100"
   echo "  命令行: swarm status / swarm chat"
+  echo "  单元:   $UNIT（由 deploy/agy-agent-swarm.service 渲染）"
   echo "  日志: journalctl --user -u agy-agent-swarm -f"
   exit 0
 fi

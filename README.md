@@ -73,6 +73,10 @@ swarm status          # 命令行连当前服务；没起来会自动启动
 （复制 `.next/static`、补齐 pnpm 外部包软链）→ 删除运行时目录。启动入口是 `dist/standalone/server.js`，
 监听 `127.0.0.1:3100`；服务单元见 `deploy/agy-agent-swarm.service`，日志走 `journalctl --user -u agy-agent-swarm`。
 
+脚本里没有写死任何人的家目录：`deploy/agy-agent-swarm.service` 是模板（`@APP_ROOT@`、`@NODE_BIN@`、
+`@NODE_DIR@` 三个占位符，家目录用 systemd 的 `%h`），`install.sh --service` 按当前机器渲染后写到
+`~/.config/systemd/user/agy-agent-swarm.service`，换用户或换 clone 路径都不用改文件。
+
 `data/`、`dist/`、`.git/` 不会进入产物（`outputFileTracingExcludes`）；注意别在排除规则里写
 `./server/**` 这类与 `.next/server` 同名的路径，Turbopack 会连 `.next/server/chunks` 一起剔掉。
 `dist/standalone/node_modules` 是指回仓库 `node_modules` 的相对软链：`serverExternalPackages` 的追踪
@@ -405,7 +409,7 @@ tools/
   standalone.sh     构建 dist/standalone 产物
   worker-shot.mjs  给执行代理用的截图工具
 deploy/
-  agy-agent-swarm.service  systemd user 单元（standalone 常驻 3100）
+  agy-agent-swarm.service  systemd user 单元模板（由 install.sh 渲染安装）
 data/           运行时数据（不入库）
   chats/<chatId>.json 会话记录（对话、taskIds 历史、最近一次 taskId）
   runs/<taskId>/   各代理 worktree、integration、orchestrator
